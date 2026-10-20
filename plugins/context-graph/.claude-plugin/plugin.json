@@ -1,0 +1,36 @@
+{
+  "name": "context-graph",
+  "displayName": "Context Graph",
+  "version": "0.1.0",
+  "description": "Long-term memory for Claude as a Neo4j knowledge graph: Claude records what it learns about you, your projects and your decisions, and recalls it in every session where the plugin is enabled.",
+  "author": {
+    "name": "Matin Ebadi"
+  },
+  "keywords": ["memory", "knowledge-graph", "context", "neo4j", "mcp"],
+  "userConfig": {
+    "neo4j_uri": {
+      "type": "string",
+      "title": "Neo4j URI",
+      "description": "Bolt URI of the graph database. Keep the default to use the local Docker database started by /context-graph:setup.",
+      "default": "bolt://localhost:7688"
+    },
+    "neo4j_user": {
+      "type": "string",
+      "title": "Neo4j user",
+      "description": "Database user.",
+      "default": "neo4j"
+    },
+    "neo4j_password": {
+      "type": "string",
+      "title": "Neo4j password",
+      "description": "Only needed for an external database. Leave empty for the local one: /context-graph:setup generates its password and stores it in ~/.context-graph/.",
+      "sensitive": true
+    },
+    "neo4j_database": {
+      "type": "string",
+      "title": "Neo4j database",
+      "description": "Database name.",
+      "default": "neo4j"
+    }
+  }
+}

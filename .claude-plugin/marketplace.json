@@ -1,0 +1,13 @@
+{
+  "name": "context-graph",
+  "owner": {
+    "name": "Matin Ebadi"
+  },
+  "plugins": [
+    {
+      "name": "context-graph",
+      "source": "./plugins/context-graph",
+      "description": "Long-term memory for Claude as a Neo4j knowledge graph, enabled per project."
+    }
+  ]
+}

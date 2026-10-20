@@ -1,10 +1,11 @@
 [project]
 name = "context-graph"
 version = "0.1.0"
-description = "A persistent, git-tracked context graph that Claude reads and writes through MCP."
+description = "Claude Code plugin: long-term memory for Claude as a Neo4j knowledge graph (MCP server + CLI)."
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=2.3,<3",
+    "neo4j>=5.20",
     "pyyaml>=6",
 ]
 

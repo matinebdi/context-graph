@@ -1,0 +1,24 @@
+# Local Neo4j for the context-graph plugin. Started by `context-graph up` (/context-graph:setup),
+# which supplies CONTEXT_GRAPH_NEO4J_PASSWORD from ~/.context-graph/neo4j-password.
+# Ports are bound to 127.0.0.1 only and default to 7475/7688 so they never clash with a Neo4j the user
+# already runs on 7474/7687; override them with CONTEXT_GRAPH_HTTP_PORT / CONTEXT_GRAPH_BOLT_PORT.
+name: context-graph
+
+services:
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: context-graph-neo4j
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${CONTEXT_GRAPH_HTTP_PORT:-7475}:7474"
+      - "127.0.0.1:${CONTEXT_GRAPH_BOLT_PORT:-7688}:7687"
+    environment:
+      NEO4J_AUTH: "neo4j/${CONTEXT_GRAPH_NEO4J_PASSWORD:?run 'context-graph up' so the password is generated}"
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    volumes:
+      - neo4j-data:/data
+
+volumes:
+  neo4j-data:

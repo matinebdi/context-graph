@@ -1,0 +1,17 @@
+{
+  "description": "Load the context graph overview and the current project's node into each session",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 120,
+            "command": "UV_PROJECT_ENVIRONMENT=\"${CLAUDE_PLUGIN_DATA}/venv\" uv run --quiet --frozen --project \"${CLAUDE_PLUGIN_ROOT}\" context-graph hook session-start"
+          }
+        ]
+      }
+    ]
+  }
+}

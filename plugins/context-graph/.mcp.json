@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "context-graph": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--frozen", "--project", "${CLAUDE_PLUGIN_ROOT}", "context-graph-mcp"],
+      "env": {
+        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv",
+        "CONTEXT_GRAPH_NEO4J_URI": "${user_config.neo4j_uri}",
+        "CONTEXT_GRAPH_NEO4J_USER": "${user_config.neo4j_user}",
+        "CONTEXT_GRAPH_NEO4J_PASSWORD": "${user_config.neo4j_password}",
+        "CONTEXT_GRAPH_NEO4J_DATABASE": "${user_config.neo4j_database}"
+      }
+    }
+  }
+}
