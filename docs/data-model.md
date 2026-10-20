@@ -103,9 +103,11 @@ CREATE VECTOR INDEX entity_embedding IF NOT EXISTS FOR (n:Entity) ON n.embedding
 
 `search_graph` is hybrid: it combines a keyword ranking and a meaning ranking.
 
-1. **Keyword ranking.** The query is split into words, which drops every Lucene operator. Each
-   word `w` becomes `w OR w*`, so `"rotate jwt"` becomes `rotate OR rotate* OR jwt OR jwt*`. That
-   query runs against the full-text index `entity_text` (id, title, summary, body, tags).
+1. **Keyword ranking.** The query is split into words, which drops every Lucene operator, and
+   single letters are dropped. Words of 4+ characters also match as a prefix (`w OR w*`), while
+   shorter words match exactly, so `"rotate the jwt"` becomes `rotate OR rotate* OR the OR jwt`.
+   This keeps words like French *la* from prefix-matching *language* or *layout*. The query runs
+   against the full-text index `entity_text` (id, title, summary, body, tags).
 2. **Meaning ranking.** The query is embedded with the same local model as the nodes, and the
    vector index returns the nearest nodes. Matches below a cosine similarity of `0.3` are dropped.
 3. **Fusion.** The two rankings are merged with *reciprocal rank fusion*: each list adds

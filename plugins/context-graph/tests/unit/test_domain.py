@@ -38,7 +38,8 @@ class TestPathKey:
 
 class TestLuceneQuery:
     def test_strips_operators(self):
-        assert Neo4jStore.lucene_query('foo:bar "baz" (x)') == "foo OR foo* OR bar OR bar* OR baz OR baz* OR x OR x*"
+        assert Neo4jStore.lucene_query('rotate:jwt "tokens" (x)') == "rotate OR rotate* OR jwt OR tokens OR tokens*"
+        assert Neo4jStore.lucene_query("pourquoi la") == "pourquoi OR pourquoi* OR la"  # no "la*" noise
         assert Neo4jStore.lucene_query("!!") == ""
 
 

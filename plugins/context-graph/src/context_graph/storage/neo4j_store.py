@@ -636,17 +636,21 @@ class Neo4jStore:
     def _to_node(row: dict) -> Node:
         return Node.from_dict({**row["props"], "relations": row["rels"], "projects": row["projects"]})
 
-    @staticmethod
-    def lucene_query(text: str) -> str:
-        """Builds a Lucene query matching each word exactly or as a prefix.
+    # Words shorter than this match exactly only: "la*" would match "language", "layout"...
+    PREFIX_MIN_LENGTH = 4
 
-        Tokenizing on word characters drops every Lucene operator and special character.
+    @classmethod
+    def lucene_query(cls, text: str) -> str:
+        """Builds a Lucene query matching each word exactly, and longer words also as a prefix.
+
+        Tokenizing on word characters drops every Lucene operator and special character;
+        single characters are dropped too.
 
         Args:
             text: Free text.
 
         Returns:
-            E.g. ``rotate OR rotate* OR jwt OR jwt*``; empty if there are no words.
+            E.g. ``rotate OR rotate* OR jwt``; empty if there are no words.
         """
-        tokens = re.findall(r"\w+", text.lower())
-        return " OR ".join(f"{t} OR {t}*" for t in tokens)
+        tokens = [t for t in re.findall(r"\w+", text.lower()) if len(t) > 1]
+        return " OR ".join(f"{t} OR {t}*" if len(t) >= cls.PREFIX_MIN_LENGTH else t for t in tokens)
