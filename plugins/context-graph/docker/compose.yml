@@ -14,6 +14,8 @@ services:
       - "127.0.0.1:${CONTEXT_GRAPH_BOLT_PORT:-7688}:7687"
     environment:
       NEO4J_AUTH: "neo4j/${CONTEXT_GRAPH_NEO4J_PASSWORD:?run 'context-graph up' so the password is generated}"
+      # Tell clients (e.g. Neo4j Browser) the host-side bolt port, not the container's 7687.
+      NEO4J_server_bolt_advertised__address: "localhost:${CONTEXT_GRAPH_BOLT_PORT:-7688}"
       NEO4J_server_memory_heap_initial__size: 512m
       NEO4J_server_memory_heap_max__size: 1G
       NEO4J_server_memory_pagecache_size: 512m
