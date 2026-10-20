@@ -12,7 +12,7 @@
       "type": "string",
       "title": "Neo4j URI",
       "description": "Bolt URI of the graph database. Keep the default to use the local Docker database started by /context-graph:setup.",
-      "default": "bolt://localhost:7688"
+      "default": "bolt://127.0.0.1:7688"
     },
     "neo4j_user": {
       "type": "string",

@@ -65,7 +65,7 @@ class Settings:
             password = password_file().read_text(encoding="utf-8").strip()
         return cls(
             uri=_env("CONTEXT_GRAPH_NEO4J_URI", "CLAUDE_PLUGIN_OPTION_NEO4J_URI",
-                     default="bolt://localhost:7688"),
+                     default="bolt://127.0.0.1:7688"),
             user=_env("CONTEXT_GRAPH_NEO4J_USER", "CLAUDE_PLUGIN_OPTION_NEO4J_USER", default="neo4j"),
             password=password,
             database=_env("CONTEXT_GRAPH_NEO4J_DATABASE", "CLAUDE_PLUGIN_OPTION_NEO4J_DATABASE",

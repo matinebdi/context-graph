@@ -35,7 +35,7 @@ allowed-tools: Bash
 
 4. Tell the user:
    - The graph is ready.
-   - They can browse it at http://localhost:7475 with user `neo4j` and the password in
+   - They can browse it at http://127.0.0.1:7475 with user `neo4j` and the password in
      `~/.context-graph/neo4j-password`.
    - If the `context-graph` MCP tools reported errors earlier in this session, the next tool call
      reconnects automatically. If it doesn't, they can run `/mcp` and reconnect the server.

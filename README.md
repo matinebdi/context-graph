@@ -8,7 +8,7 @@ Claude recalls that knowledge at the start of the next session.
 - **One graph, scoped by project.** Knowledge about you (preferences, tools) follows you
   everywhere. Decisions, concepts and tasks belong to the project they came from.
 - **A real graph database.** Neo4j runs locally in Docker, or you can point the plugin at your own
-  instance. Browse what Claude knows at http://localhost:7475 and query it with Cypher.
+  instance. Browse what Claude knows at http://127.0.0.1:7475 and query it with Cypher.
 - **Low friction.** A SessionStart hook loads the relevant context automatically. A skill teaches
   Claude when and what to record.
 
@@ -103,7 +103,7 @@ To use your own Neo4j, such as a team server or Aura, set the plugin options in 
 
 | Option | Default |
 |---|---|
-| `neo4j_uri` | `bolt://localhost:7688` |
+| `neo4j_uri` | `bolt://127.0.0.1:7688` |
 | `neo4j_user` | `neo4j` |
 | `neo4j_password` | empty, meaning the local password file is used. Stored in secure storage |
 | `neo4j_database` | `neo4j` |

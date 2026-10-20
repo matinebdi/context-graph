@@ -86,7 +86,7 @@ def cmd_up(timeout: int = 180) -> int:
             time.sleep(3)
     store.init_schema()
     print(f"\nNeo4j is up at {store.settings.uri}; schema ready.")
-    print(f"Browser: http://localhost:{os.environ.get('CONTEXT_GRAPH_HTTP_PORT', '7475')}  (user neo4j, password in "
+    print(f"Browser: http://127.0.0.1:{os.environ.get('CONTEXT_GRAPH_HTTP_PORT', '7475')}  (user neo4j, password in "
           f"{home_dir() / 'neo4j-password'})")
     return 0
 

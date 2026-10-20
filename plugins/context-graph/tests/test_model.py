@@ -55,4 +55,4 @@ def test_settings_ignore_unresolved_placeholders(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_NEO4J_USER", "alice")
     (tmp_path / "neo4j-password").write_text("from-file\n")
     s = Settings.from_env()
-    assert (s.uri, s.user, s.password) == ("bolt://localhost:7688", "alice", "from-file")
+    assert (s.uri, s.user, s.password) == ("bolt://127.0.0.1:7688", "alice", "from-file")
