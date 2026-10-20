@@ -8,7 +8,7 @@
           {
             "type": "command",
             "timeout": 120,
-            "command": "UV_PROJECT_ENVIRONMENT=\"${CLAUDE_PLUGIN_DATA}/venv\" uv run --quiet --frozen --project \"${CLAUDE_PLUGIN_ROOT}\" context-graph hook session-start"
+            "command": "if command -v uv >/dev/null 2>&1; then UV_PROJECT_ENVIRONMENT=\"${CLAUDE_PLUGIN_DATA}/venv\" uv run --quiet --frozen --project \"${CLAUDE_PLUGIN_ROOT}\" context-graph hook session-start; else echo \"[context-graph] The context graph is unavailable: uv is not installed (or not on PATH). Tell the user to install uv (https://docs.astral.sh/uv/getting-started/installation/), restart Claude Code, then run /context-graph:setup.\"; fi"
           }
         ]
       }

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -33,8 +34,18 @@ memory: search_graph / get_node before asking the user things they may have told
 record durable facts, preferences, decisions (with the why), components, resources and open tasks
 with upsert_node as you learn them. Call log_session after meaningful work."""
 
-OFFLINE = ("[context-graph] The context graph is offline ({reason}). "
-           "Tell the user they can run /context-graph:setup to start it.")
+OFFLINE = "[context-graph] The context graph is offline ({reason}). {hint}"
+HINT_SETUP = "Tell the user they can run /context-graph:setup to start it."
+HINT_NO_DOCKER = (
+    "Docker is not installed (or not on PATH), and the local database needs it. Tell the user to "
+    "either install Docker Desktop and run /context-graph:setup, or point the plugin at an external "
+    "Neo4j (for example a free Neo4j Aura instance) with the neo4j_* options in /config."
+)
+
+
+def offline_hint(uri: str) -> str:
+    local = "127.0.0.1" in uri or "localhost" in uri
+    return HINT_NO_DOCKER if local and shutil.which("docker") is None else HINT_SETUP
 
 
 def hook_session_start(store: Neo4jStore) -> str:
@@ -53,7 +64,7 @@ def hook_session_start(store: Neo4jStore) -> str:
         ]
         return "\n\n".join(parts)
     except GraphError as e:
-        return OFFLINE.format(reason=str(e).split(".")[0])
+        return OFFLINE.format(reason=str(e).split(". ")[0], hint=offline_hint(store.settings.uri))
 
 
 def compose(*args: str, password: str) -> int:

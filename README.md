@@ -99,7 +99,7 @@ Design choices:
 | Component | Version | Why |
 |---|---|---|
 | Claude Code | recent 2.x with plugin support (`claude plugin …`) | loads the plugin, MCP server, hook and skills |
-| Docker Engine / Docker Desktop | Compose v2 (`docker compose`) | runs the bundled Neo4j. Not needed with an external Neo4j |
+| Docker Engine / Docker Desktop | Compose v2 (`docker compose`) | runs the bundled Neo4j. **Optional**: without Docker, use an external Neo4j such as a free Aura instance ([§8](#8-configuration-reference)) |
 | [uv](https://docs.astral.sh/uv/) | ≥ 0.4 | creates the Python environment and runs the server and CLI. Downloads a Python ≥ 3.11 automatically if none is present |
 | Network | outbound HTTPS on first run | PyPI packages and the `neo4j:5.26-community` image (~600 MB) |
 | RAM | ~1.5 GB free for the container | heap max 1 GB plus 512 MB page cache (tunable in `docker/compose.yml`) |
@@ -601,6 +601,8 @@ every user can read and write every node. There is no per-user access control in
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Session starts with `[context-graph] … uv is not installed` | `uv` missing from the `PATH` of Claude Code (the hook checks with `command -v uv` and degrades to this message; the MCP server can't start) | install uv, restart Claude Code, `/context-graph:setup` |
+| Offline notice says *Docker is not installed* | local URI configured but no `docker` on `PATH` | install Docker Desktop and `/context-graph:setup`, **or** create a free [Neo4j Aura](https://neo4j.com/cloud/aura-free/) instance and set `neo4j_uri` (`neo4j+s://…`), `neo4j_user`, `neo4j_password` in `/config`, then `context-graph init-schema` |
 | Session starts with `[context-graph] The context graph is offline (…)` | Docker or the container isn't running, or there is no password yet | `/context-graph:setup`, or `docker start context-graph-neo4j` |
 | `Bind for 0.0.0.0:7475/7688 failed: port is already allocated` | another service holds the port | `CONTEXT_GRAPH_BOLT_PORT=7690 CONTEXT_GRAPH_HTTP_PORT=7476 uv run context-graph up`, then set `neo4j_uri` to `bolt://127.0.0.1:7690` |
 | `Neo4j rejected the credentials` after reinstalling | the volume was created with a previous password; `NEO4J_AUTH` is ignored after the first init | restore the old `~/.context-graph/neo4j-password`, **or** (this destroys the graph) `docker compose -p context-graph down -v` and run `up` again |
