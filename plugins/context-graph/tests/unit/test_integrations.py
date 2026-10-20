@@ -5,7 +5,8 @@ import pytest
 
 from context_graph.cli import SessionStartHook
 from context_graph.domain import GraphError
-from context_graph.integrations import ClientIntegration, CursorIntegration, PythonRuntime
+from context_graph.config import Environment
+from context_graph.integrations import AgentFiles, ClientIntegration, CursorIntegration, PythonRuntime
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
@@ -70,20 +71,58 @@ class TestPythonRuntime:
             PythonRuntime.interpreter()
 
 
-class TestAgentInstructions:
-    def test_claude_skill_matches_shared_instructions(self):
-        skill = (PLUGIN_ROOT / "skills" / "context-graph" / "SKILL.md").read_text(encoding="utf-8")
-        assert skill.endswith(ClientIntegration.agent_instructions()), \
-            "skills/context-graph/SKILL.md is out of sync with assets/agent-instructions.md"
+class TestAgentFiles:
+    def test_generated_files_match_shared_instructions(self):
+        assert AgentFiles(PLUGIN_ROOT).stale() == [], \
+            "run `context-graph generate-agent-files`: the Claude skill or Cursor rule is out of sync"
+
+    def test_write_regenerates_stale_files(self, tmp_path):
+        files = AgentFiles(tmp_path)
+        assert set(files.write()) == {AgentFiles.CLAUDE_SKILL, AgentFiles.CURSOR_RULE}
+        assert files.stale() == [] and files.write() == []
+        rule = (tmp_path / AgentFiles.CURSOR_RULE).read_text(encoding="utf-8")
+        assert "alwaysApply: true" in rule and rule.endswith(ClientIntegration.agent_instructions())
+
+
+class TestCursorPlugin:
+    def test_manifest_paths_exist_and_avoid_claude_files(self):
+        manifest = read(PLUGIN_ROOT / ".cursor-plugin" / "plugin.json")
+        for field in ("rules", "commands", "skills", "hooks", "mcpServers", "logo"):
+            assert (PLUGIN_ROOT / manifest[field]).exists(), field
+        assert manifest["mcpServers"] == "mcp.json" and manifest["skills"].startswith("cursor/")
+        claude = read(PLUGIN_ROOT / ".claude-plugin" / "plugin.json")
+        assert manifest["version"] == claude["version"]
+
+    def test_mcp_and_hooks_use_the_plugin_root(self):
+        server = read(PLUGIN_ROOT / "mcp.json")["mcpServers"]["context-graph"]
+        assert "${CURSOR_PLUGIN_ROOT}" in server["args"] and server["env"]["CONTEXT_GRAPH_CLIENT"] == "cursor"
+        hooks = read(PLUGIN_ROOT / "cursor" / "hooks.json")["hooks"]
+        assert {e["command"] for event in hooks.values() for e in event} == {
+            "./cursor/hook.sh session-start", "./cursor/hook.sh stop"}
 
 
 class TestSessionStartHook:
     def test_directory_precedence(self, monkeypatch):
-        monkeypatch.delenv("CONTEXT_GRAPH_PROJECT_DIR", raising=False)
-        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+        for name in Environment.PROJECT_DIR_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
         assert SessionStartHook.directory({"workspace_roots": ["/w"], "cwd": "/c"}) == "/w"
         assert SessionStartHook.directory({"cwd": "/c"}) == "/c"
+        monkeypatch.setenv("CURSOR_PROJECT_DIR", "/cursor")
+        assert SessionStartHook.directory({"workspace_roots": ["/w"]}) == "/cursor"
         monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/claude")
         assert SessionStartHook.directory({"workspace_roots": ["/w"]}) == "/claude"
         monkeypatch.setenv("CONTEXT_GRAPH_PROJECT_DIR", "/explicit")
         assert SessionStartHook.directory({"workspace_roots": ["/w"]}) == "/explicit"
+
+
+class TestProjectDirGuard:
+    def test_plugin_install_folder_never_counts_as_a_project(self, monkeypatch):
+        for name in Environment.PROJECT_DIR_VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.chdir(PLUGIN_ROOT)
+        assert Environment.project_dir() == ""
+        assert SessionStartHook.directory({"cwd": str(PLUGIN_ROOT / "src")}) == ""
+        monkeypatch.setenv("CONTEXT_GRAPH_PROJECT_DIR", "${workspaceFolder}")  # not expanded by the client
+        assert Environment.project_dir() == ""
+        monkeypatch.setenv("CURSOR_PROJECT_DIR", str(PLUGIN_ROOT.parent))
+        assert Environment.project_dir() == str(PLUGIN_ROOT.parent)

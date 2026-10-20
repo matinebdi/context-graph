@@ -57,12 +57,17 @@ Then run `/context-graph:setup` inside Claude Code. You only need to do this onc
 
 ### Cursor
 
+Install the **Context Graph** plugin, then run `/context-graph-setup` once per machine. Until the
+plugin is listed in the Cursor Marketplace, install it locally:
+
 ```sh
-uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"
-context-graph up                  # once per machine: starts Neo4j in Docker
-cd your-project
-context-graph install cursor      # then restart Cursor
+git clone https://github.com/matinebdi/context-graph.git
+cp -r context-graph/plugins/context-graph ~/.cursor/plugins/local/context-graph
+# then in Cursor: Developer: Reload Window
 ```
+
+Other options (team marketplace, or no plugins at all) are in
+[Installation → Cursor](docs/installation.md#cursor).
 
 ### Check that it works
 

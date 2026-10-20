@@ -52,6 +52,7 @@ are blocked.
 | `search <query> [--type T]` | hybrid search |
 | `review [--stale-days N]` | report duplicates, orphans, stale tasks, outdated dependencies |
 | `reindex [--all]` | compute missing embeddings; `--all` recomputes every node (e.g. after a model change) |
+| `generate-agent-files` | development: regenerate the Claude skill and the Cursor plugin rule from `agent-instructions.md` |
 | `export <file.json>` | dump the whole graph ([format](operations.md#backup-and-migration)) |
 | `import <file.json>` | load an export in one transaction |
 | `import-markdown <dir>` | import the legacy one-markdown-file-per-node format |
@@ -93,7 +94,8 @@ placeholder doesn't count, which matters because an unset plugin option can arri
 | `CONTEXT_GRAPH_EMBEDDINGS` | on | `off` disables semantic search (keyword search only) |
 | `CONTEXT_GRAPH_BOLT_PORT` | `7688` | host bolt port of the local container; update the URI to match |
 | `CONTEXT_GRAPH_HTTP_PORT` | `7475` | host port of Neo4j Browser |
-| `CONTEXT_GRAPH_PROJECT_DIR` | set by the Cursor config | the session's project directory; takes precedence over `CLAUDE_PROJECT_DIR` |
-| `CLAUDE_PROJECT_DIR` | set by Claude Code | the session's project directory |
+| `CONTEXT_GRAPH_PROJECT_DIR` | set by the Cursor configs from `${workspaceFolder}` | the session's project directory; takes precedence over the two below |
+| `CLAUDE_PROJECT_DIR` | set by Claude Code (and by Cursor for hooks) | the session's project directory |
+| `CURSOR_PROJECT_DIR` | set by Cursor for hooks | the session's project directory |
 | `UV_PROJECT_ENVIRONMENT` | `${CLAUDE_PLUGIN_DATA}/venv` | the Claude plugin's Python environment; survives plugin updates |
 | `CONTEXT_GRAPH_TEST_URI`, `_TEST_PASSWORD` | — | run the tests against an existing **disposable** database, which they wipe |

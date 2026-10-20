@@ -15,9 +15,16 @@ git clone https://github.com/matinebdi/context-graph.git
 cd context-graph/plugins/context-graph
 uv sync                           # .venv with the dev dependencies
 uv run pytest -q                  # all tests
-claude plugin validate .          # plugin manifest, hooks, MCP config
-claude plugin validate ../..      # marketplace
+claude plugin validate .          # Claude plugin manifest, hooks, MCP config
+claude plugin validate ../..      # Claude marketplace
 ```
+
+To validate the Cursor plugin, run the validator from Cursor's
+[plugin template](https://github.com/cursor/plugin-template) at the repository root:
+`node <plugin-template>/scripts/validate-template.mjs`.
+
+To try the Cursor plugin live, copy `plugins/context-graph` into `~/.cursor/plugins/local/` and
+reload the window.
 
 To work on the plugin live, add the clone as a marketplace (`claude plugin marketplace add
 ./context-graph`), edit, then run `/reload-plugins`.
@@ -56,15 +63,21 @@ How the integration tests get their database:
 
 ```
 .
-├── .claude-plugin/marketplace.json   # marketplace "context-graph" → ./plugins/context-graph
+├── .claude-plugin/marketplace.json   # Claude Code marketplace "context-graph" → ./plugins/context-graph
+├── .cursor-plugin/marketplace.json   # Cursor marketplace, same plugin folder
 ├── .claude/settings.json             # enables the plugin for this repo (dogfooding)
+├── .gitattributes                    # keeps *.sh with LF line endings on every OS
 ├── docs/                             # these guides
 ├── LICENSE · README.md
-└── plugins/context-graph/            # the plugin root (${CLAUDE_PLUGIN_ROOT}) and the Python package
-    ├── .claude-plugin/plugin.json    # manifest + userConfig
-    ├── .mcp.json                     # MCP server via uv
-    ├── hooks/hooks.json              # SessionStart hook
-    ├── skills/                       # context-graph (policy), setup, status, remember
+└── plugins/context-graph/            # plugin root for both clients, and the Python package
+    ├── .claude-plugin/plugin.json    # Claude: manifest + userConfig
+    ├── .mcp.json                     # Claude: MCP server via uv (${CLAUDE_PLUGIN_ROOT}/_DATA)
+    ├── hooks/hooks.json              # Claude: SessionStart and Stop hooks
+    ├── skills/                       # Claude: context-graph (policy), setup, status, remember
+    ├── .cursor-plugin/plugin.json    # Cursor: manifest with explicit component paths
+    ├── mcp.json                      # Cursor: MCP server via uv (${CURSOR_PLUGIN_ROOT})
+    ├── cursor/                       # Cursor: rules/, commands/, hooks.json, hook.sh, skills/ (empty)
+    ├── assets/logo.svg               # Cursor marketplace logo
     ├── pyproject.toml · uv.lock
     ├── src/context_graph/
     │   ├── domain/                   # Node, Relation, Schema, Clock, PathKey, GraphError
@@ -74,7 +87,7 @@ How the integration tests get their database:
     │   ├── rendering/                # MarkdownRenderer
     │   ├── server/                   # ContextGraphServer
     │   ├── cli/                      # ContextGraphCLI, SessionStartHook, StopHook, LocalDatabase
-    │   ├── integrations/             # ClientIntegration, CursorIntegration, ClaudeCodeIntegration
+    │   ├── integrations/             # ClientIntegration, CursorIntegration, ClaudeCodeIntegration, AgentFiles
     │   └── assets/                   # agent-instructions.md, compose.yml
     └── tests/
         ├── unit/
@@ -89,12 +102,22 @@ To add a client, subclass `ClientIntegration` in `integrations/` and register it
 - Classes over module-level functions; no module docstrings.
 - Google-style docstrings on classes and public methods. In `ContextGraphServer`, these are also
   the tool descriptions the agent reads.
-- `assets/agent-instructions.md` is the single source of the usage policy. If you edit it,
-  regenerate `skills/context-graph/SKILL.md` (frontmatter + that text), or the sync test fails.
+- `assets/agent-instructions.md` is the single source of the usage policy. After editing it, run
+  `uv run context-graph generate-agent-files` to regenerate the Claude skill and the Cursor rule,
+  or the sync test fails.
 
 ## Releasing
 
-1. Bump `version` in both `plugins/context-graph/.claude-plugin/plugin.json` and `pyproject.toml`.
+1. Bump the version in **four** places, which a test keeps in sync for the two manifests:
+   - `plugins/context-graph/.claude-plugin/plugin.json`
+   - `plugins/context-graph/.cursor-plugin/plugin.json`
+   - `pyproject.toml`
+   - the `metadata.version` of `.cursor-plugin/marketplace.json`
+
    Claude Code keeps users on the manifest version, so they only get updates when it changes.
 2. If dependencies changed, run `uv lock`. Installs use `--frozen`, so they get exactly what is
    in `uv.lock`.
+3. Run the tests and the three validators (two Claude, one Cursor).
+4. To publish in the Cursor Marketplace, submit the repository at
+   https://cursor.com/marketplace/publish, where each plugin is reviewed by hand. Community
+   listings go on https://cursor.directory.

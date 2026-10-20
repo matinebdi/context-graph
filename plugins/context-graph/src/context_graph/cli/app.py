@@ -7,7 +7,7 @@ from context_graph.cli.database import LocalDatabase
 from context_graph.cli.hooks import SessionStartHook, StopHook
 from context_graph.config import Environment
 from context_graph.domain import GraphError, Node
-from context_graph.integrations import INTEGRATIONS
+from context_graph.integrations import INTEGRATIONS, AgentFiles
 from context_graph.rendering import MarkdownRenderer
 from context_graph.storage import GraphMaintenance, Neo4jStore
 
@@ -115,6 +115,11 @@ class ContextGraphCLI:
             print(output)
         return 0  # a hook must never block the session
 
+    def cmd_generate_agent_files(self, args) -> int:
+        written = AgentFiles().write()
+        print("\n".join(f"wrote {path}" for path in written) or "agent files are up to date")
+        return 0
+
     def cmd_review(self, args) -> int:
         print(GraphMaintenance(self.store).review(args.stale_days).to_markdown())
         return 0
@@ -183,6 +188,8 @@ class ContextGraphCLI:
         sub.add_parser("init-schema", help="create constraints and indexes (idempotent)")
         review = sub.add_parser("review", help="find duplicates, orphans, stale tasks, outdated dependencies")
         review.add_argument("--stale-days", type=int, default=30)
+        sub.add_parser("generate-agent-files",
+                       help="(development) regenerate the Claude skill and Cursor rule from agent-instructions.md")
         reindex = sub.add_parser("reindex", help="compute embeddings for semantic search")
         reindex.add_argument("--all", action="store_true", help="recompute every node, not only missing ones")
         overview = sub.add_parser("overview", help="the overview injected at session start")

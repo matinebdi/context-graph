@@ -5,7 +5,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
 from context_graph.config import Environment
-from context_graph.domain import Relation, Schema
+from context_graph.domain import GraphError, Relation, Schema
 from context_graph.rendering import MarkdownRenderer
 from context_graph.storage import GraphMaintenance, Neo4jStore
 
@@ -74,12 +74,31 @@ Custom snake_case types are allowed when none of these fit.
 Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
 """
 
-    def current_project(self) -> str:
-        """Returns the id of the session's project node, registering the project on first use."""
+    def current_project(self) -> str | None:
+        """Returns the id of the session's project node, registering the project on first use.
+
+        Returns None when the project directory is unknown; tools then work graph-wide.
+        """
         directory = Environment.project_dir()
+        if not directory:
+            return None
         if directory not in self._projects:
             self._projects[directory] = self.store.ensure_project(directory).id
         return self._projects[directory]
+
+    def required_project(self, project: str | None = None) -> str:
+        """Returns ``project`` or the current project.
+
+        Raises:
+            GraphError: If neither is known.
+        """
+        resolved = project or self.current_project()
+        if not resolved:
+            raise GraphError(
+                "the current project is unknown (the client didn't say which folder it works in); "
+                "pass a project id explicitly, or set CONTEXT_GRAPH_PROJECT_DIR in the MCP config"
+            )
+        return resolved
 
     # ------------------------------------------------------------------ tools
 
@@ -207,7 +226,7 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
             project: Project id; defaults to the current project.
             remove: Detach instead of attach.
         """
-        project_id = project or self.current_project()
+        project_id = self.required_project(project)
         self.store.set_project(id, project_id, remove=remove)
         action = "Detached" if remove else "Attached"
         return f"{action} `{id}` {'from' if remove else 'to'} project `{project_id}`."
@@ -249,7 +268,7 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
             details: Markdown details.
             related: Ids of the decisions, tasks and other nodes the session touched.
         """
-        project = self.current_project()
+        project = self.required_project()
         today = dt.date.today().isoformat()
         base = f"session-{today}-{Schema.slug(project)}"[:80]
         session_id, n = base, 2

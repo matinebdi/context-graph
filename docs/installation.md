@@ -13,7 +13,7 @@
 
 | Component | Version | Notes |
 |---|---|---|
-| Claude Code **or** Cursor | Claude Code 2.x with plugins; Cursor with MCP and hooks | the client |
+| Claude Code **or** Cursor | Claude Code 2.x with plugins; Cursor with plugins (or MCP and hooks for the CLI installer) | the client |
 | [uv](https://docs.astral.sh/uv/) | ≥ 0.4 | creates the Python environment and runs the server and CLI. Downloads Python ≥ 3.11 if none is present |
 | Docker Desktop / Docker Engine | Compose v2 (`docker compose`) | runs the bundled Neo4j. **Optional**: see [External Neo4j](#external-neo4j-no-docker) |
 | Network | outbound HTTPS on first run | Python packages, the `neo4j:5.26-community` image (~600 MB) and the embedding model (~220 MB) |
@@ -25,9 +25,9 @@ Platforms: developed and verified on **Windows 11**, where Git Bash runs the hoo
 Linux are expected to work, since everything is POSIX shell plus Python, but they haven't been
 verified yet.
 
-For Claude Code, `uv` and `docker` must be on the `PATH` of the process that launches it. If you
-start it from an IDE or a desktop shortcut, make sure that environment inherits your shell's
-`PATH`. Cursor doesn't need this, because its config contains absolute paths.
+With either plugin, `uv` and `docker` must be on the `PATH` of the client. If you start the client
+from a desktop shortcut (on macOS in particular), make sure it inherits your shell's `PATH`. The
+CLI installer for Cursor doesn't need this, because it writes absolute paths.
 
 ## Claude Code
 
@@ -76,11 +76,65 @@ restart.
 
 ## Cursor
 
-Install the package once per machine as a uv tool. That puts the `context-graph` command on your
-`PATH`:
+Context Graph is a Cursor plugin. The same `plugins/context-graph/` folder carries both the Claude
+Code manifest and the Cursor manifest (`.cursor-plugin/plugin.json`). The Cursor plugin bundles:
+- the MCP server
+- an always-on rule with the usage policy
+- `sessionStart` and `stop` hooks
+- three commands: `/context-graph-setup`, `/context-graph-status` and `/context-graph-remember`
+
+After installing it by one of the options below, run **`/context-graph-setup`** once per machine
+to start the database.
+
+### Option 1: Cursor Marketplace
+
+Once the plugin is listed, open **Customize**, find **Context Graph**, select **Install**, and
+choose the project or user scope.
+
+### Option 2: local plugin (works today)
+
+Copy the plugin folder into Cursor's local plugins folder, then run **Developer: Reload Window**:
+
+```sh
+# macOS / Linux / Git Bash
+git clone https://github.com/matinebdi/context-graph.git
+mkdir -p ~/.cursor/plugins/local
+cp -r context-graph/plugins/context-graph ~/.cursor/plugins/local/context-graph
+```
+
+```powershell
+# Windows PowerShell
+git clone https://github.com/matinebdi/context-graph.git
+New-Item -ItemType Directory -Force "$HOME\.cursor\plugins\local" | Out-Null
+Copy-Item -Recurse context-graph\plugins\context-graph "$HOME\.cursor\plugins\local\context-graph"
+```
+
+To update, pull the repository and copy the folder again. In a team, an admin may have to enable
+**Allow Local Plugin Imports**.
+
+### Option 3: team marketplace
+
+A Cursor admin can import `https://github.com/matinebdi/context-graph` as a team marketplace. The
+repository has a `.cursor-plugin/marketplace.json` at its root. Team members then install the
+plugin from **Customize**.
+
+How the Cursor plugin runs:
+- **MCP server.** It runs `uv run --project ${CURSOR_PLUGIN_ROOT} python -m context_graph.server`,
+  so the first start installs the Python dependencies into the plugin folder's `.venv`.
+- **Project folder.** The server learns the workspace from `${workspaceFolder}` or
+  `CURSOR_PROJECT_DIR`. If neither is available, it works graph-wide instead of guessing.
+- **Hooks.** They run `cursor/hook.sh`, a POSIX shell script that finds the plugin folder by itself.
+- **PATH.** `uv` must be on the `PATH` that Cursor sees.
+
+### Without plugins: the CLI installer
+
+Use this where plugins are disabled. It wires the same pieces directly into a project's
+`.cursor/` folder. Install the package once per machine as a uv tool, which puts the
+`context-graph` command on your `PATH`:
 
 ```sh
 uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"
+context-graph up                      # once per machine
 ```
 
 Then, in each project that should have graph memory:
@@ -90,13 +144,14 @@ cd /path/to/your/project
 context-graph install cursor          # or: context-graph install cursor --dir /path/to/project
 ```
 
-The installer merges three entries into the project's `.cursor/` folder and leaves existing
-servers, hooks and rules untouched:
+The installer merges these entries into the project's `.cursor/` folder and leaves existing
+servers, hooks and rules untouched. Don't combine it with the plugin in the same project, or the
+server and hooks would run twice.
 
 | File | Entry |
 |---|---|
 | `.cursor/mcp.json` | `mcpServers.context-graph`: runs `<python> -m context_graph.server` with `CONTEXT_GRAPH_PROJECT_DIR=${workspaceFolder}` |
-| `.cursor/hooks.json` | a `sessionStart` hook: `<python> -m context_graph.cli hook session-start --format cursor` |
+| `.cursor/hooks.json` | `sessionStart` and `stop` hooks: `<python> -m context_graph.cli hook session-start\|stop --format cursor` |
 | `.cursor/rules/context-graph.mdc` | an `alwaysApply: true` rule with the usage policy |
 
 Restart Cursor, and enable the `context-graph` server under **Settings → MCP** if Cursor asks.
@@ -113,8 +168,8 @@ Good to know:
 
 ## Start the database
 
-Once per machine, run `/context-graph:setup` in Claude Code, or `context-graph up` in a terminal.
-It does the following:
+Once per machine, run `/context-graph:setup` in Claude Code, `/context-graph-setup` in Cursor,
+or `context-graph up` in a terminal. It does the following:
 
 1. Generates a random password into `~/.context-graph/neo4j-password` (192 bits, mode `0600`
    where supported), unless the file already exists.
@@ -135,7 +190,8 @@ a team server. Point the client at it, then create the schema once:
 | Client | Where to set the connection |
 |---|---|
 | Claude Code | plugin options in `/config`: `neo4j_uri` (e.g. `neo4j+s://xxxx.databases.neo4j.io`), `neo4j_user`, `neo4j_password` |
-| Cursor | `env` of `context-graph` in `.cursor/mcp.json`: `CONTEXT_GRAPH_NEO4J_URI`, `CONTEXT_GRAPH_NEO4J_USER`, `CONTEXT_GRAPH_NEO4J_PASSWORD` |
+| Cursor plugin | user environment variables `CONTEXT_GRAPH_NEO4J_URI`, `CONTEXT_GRAPH_NEO4J_USER`, `CONTEXT_GRAPH_NEO4J_PASSWORD`, set before starting Cursor |
+| Cursor (CLI installer) | the same variables in the `env` of `context-graph` in `.cursor/mcp.json` |
 
 ```sh
 CONTEXT_GRAPH_NEO4J_URI=neo4j+s://… CONTEXT_GRAPH_NEO4J_PASSWORD=… context-graph init-schema

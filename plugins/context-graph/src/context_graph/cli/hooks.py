@@ -5,7 +5,7 @@ import shutil
 import time
 from pathlib import Path
 
-from context_graph.config import LocalCredentials
+from context_graph.config import Environment, LocalCredentials
 from context_graph.domain import GraphError
 from context_graph.rendering import MarkdownRenderer
 from context_graph.storage import Neo4jStore
@@ -184,10 +184,10 @@ class SessionStartHook:
         "record durable facts, preferences, decisions (with the why), components, resources and open tasks\n"
         "with upsert_node as you learn them. Call log_session after meaningful work."
     )
-    START = {"claude": "/context-graph:setup", "cursor": "`context-graph up` in a terminal"}
+    START = {"claude": "/context-graph:setup", "cursor": "/context-graph-setup (or `context-graph up` in a terminal)"}
     EXTERNAL = {
         "claude": "the plugin's neo4j_* options in /config",
-        "cursor": "CONTEXT_GRAPH_NEO4J_URI / _USER / _PASSWORD in the env of .cursor/mcp.json",
+        "cursor": "CONTEXT_GRAPH_NEO4J_URI / _USER / _PASSWORD environment variables",
     }
 
     def __init__(self, store: Neo4jStore, client: str = "claude"):
@@ -209,9 +209,14 @@ class SessionStartHook:
         return json.dumps({"additional_context": context}) if self.client == "cursor" else context
 
     def context(self, directory: str) -> str:
-        """Returns the overview and project page for ``directory``, or an offline notice."""
+        """Returns the overview and project page for ``directory``, or an offline notice.
+
+        An empty ``directory`` (project unknown) gives the graph-wide overview only.
+        """
         try:
             self.store.ping()
+            if not directory:
+                return "\n\n".join([self.renderer.overview(None), self.FOOTER])
             project = self.store.ensure_project(directory)
             return "\n\n".join([
                 self.renderer.overview(project.id),
@@ -237,17 +242,21 @@ class SessionStartHook:
     def directory(payload: dict) -> str:
         """Resolves the project directory of the session.
 
-        Order: ``CONTEXT_GRAPH_PROJECT_DIR``, ``CLAUDE_PROJECT_DIR``, the payload's first
-        ``workspace_roots`` entry (Cursor), its ``cwd`` (Claude Code), the working directory.
+        Order: the ``Environment.PROJECT_DIR_VARIABLES`` (``CURSOR_PROJECT_DIR`` is always set for
+        Cursor hooks), the payload's first ``workspace_roots`` entry, its ``cwd``, the working
+        directory. A directory inside this package's install folder counts as unknown.
 
         Args:
             payload: Hook stdin JSON.
+
+        Returns:
+            The directory, or an empty string if unknown.
         """
         roots = payload.get("workspace_roots") or []
-        return (
-            os.environ.get("CONTEXT_GRAPH_PROJECT_DIR")
-            or os.environ.get("CLAUDE_PROJECT_DIR")
+        directory = (
+            Environment.get(*Environment.PROJECT_DIR_VARIABLES)
             or (roots[0] if roots else None)
             or payload.get("cwd")
             or os.getcwd()
         )
+        return "" if Environment.is_install_dir(directory) else directory

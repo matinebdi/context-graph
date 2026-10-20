@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context-graph": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--frozen", "--project", "${CURSOR_PLUGIN_ROOT}", "python", "-m", "context_graph.server"],
+      "env": {
+        "CONTEXT_GRAPH_CLIENT": "cursor",
+        "CONTEXT_GRAPH_PROJECT_DIR": "${workspaceFolder}"
+      }
+    }
+  }
+}

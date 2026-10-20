@@ -52,7 +52,10 @@
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| no `context-graph` tools | the server is disabled, or Python moved after an upgrade | enable it in **Settings → MCP**, rerun `context-graph install cursor`, restart Cursor |
+| plugin: no `context-graph` tools | `uv` isn't on Cursor's `PATH`, or the first dependency install failed | check `uv --version` in a terminal, restart Cursor from a shell that has `uv`; to see errors, run `uv run --frozen --project ~/.cursor/plugins/local/context-graph python -m context_graph.server` |
+| plugin: hooks don't run (no overview at session start) | Cursor can't execute `cursor/hook.sh` on this system (no POSIX shell) | the plugin still works: the rule tells the agent to call `graph_overview`. Or use the CLI installer, whose hooks call Python directly |
+| plugin and CLI installer both active | `context-graph install cursor` was run in a project that also has the plugin | `context-graph uninstall cursor` in that project |
+| CLI installer: no `context-graph` tools | the server is disabled, or Python moved after an upgrade | enable it in **Settings → MCP**, rerun `context-graph install cursor`, restart Cursor |
 | the overview shows the wrong project | `.cursor/` isn't at the project root | run `context-graph install cursor` in the project root |
 | `install` refuses: *temporary uvx environment* | it was run through `uvx`, whose environment can disappear | install it properly first: `uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"` |
 

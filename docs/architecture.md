@@ -38,11 +38,16 @@ flowchart LR
     ST <-- "Bolt (neo4j-python-driver 6.x)" --> NEO
 ```
 
-This repository is three things at once:
-- a **Claude Code plugin marketplace**: `.claude-plugin/marketplace.json`
-- the **Claude Code plugin**: `plugins/context-graph/`
-- the **Python package** `context-graph`, in the same folder, which provides the MCP server and the
-  `context-graph` CLI, including the installers for other clients
+This repository is four things at once:
+- **two plugin marketplaces**: `.claude-plugin/marketplace.json` (Claude Code) and
+  `.cursor-plugin/marketplace.json` (Cursor), both pointing at `plugins/context-graph/`
+- the **Claude Code plugin**: `.claude-plugin/plugin.json`, `.mcp.json`, `hooks/`, `skills/`
+- the **Cursor plugin**, in the same folder: `.cursor-plugin/plugin.json`, `mcp.json` and
+  `cursor/` (rules, commands, hooks). Its manifest sets every component path explicitly, so the
+  two clients never load each other's files: the Claude files use `${CLAUDE_PLUGIN_DATA}`, which
+  Cursor doesn't expand.
+- the **Python package** `context-graph`, also in that folder, which provides the MCP server and
+  the CLI, including the installer for clients without plugin support
 
 ## Packages
 
@@ -87,8 +92,8 @@ differ only in how it is launched and in its output format:
 
 | | Claude Code | Cursor |
 |---|---|---|
-| Registered in | plugin `hooks/hooks.json`, event `SessionStart`, matcher `startup\|resume\|clear\|compact`, timeout 120 s | project `.cursor/hooks.json`, event `sessionStart` |
-| Launched with | `uv run --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m …`, with the venv in `${CLAUDE_PLUGIN_DATA}/venv`; prints a notice instead if `uv` is missing | `"<abs python>" -m … --format cursor` |
+| Registered in | plugin `hooks/hooks.json`, event `SessionStart`, matcher `startup\|resume\|clear\|compact`, timeout 120 s | plugin `cursor/hooks.json` (or, with the CLI installer, the project's `.cursor/hooks.json`), event `sessionStart` |
+| Launched with | `uv run --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m …`, with the venv in `${CLAUDE_PLUGIN_DATA}/venv`; prints a notice instead if `uv` is missing | plugin: `./cursor/hook.sh session-start`, which derives the plugin folder from its own location and runs `uv run --project <plugin> python -m … --format cursor` (or prints a notice without `uv`); CLI installer: `"<abs python>" -m … --format cursor` |
 | Output | plain markdown on stdout | `{"additional_context": "<markdown>"}` |
 | Offline hint | `/context-graph:setup`, plugin options in `/config` | `context-graph up`, `CONTEXT_GRAPH_NEO4J_*` in `.cursor/mcp.json` |
 
@@ -99,9 +104,13 @@ A hook run goes through these steps:
 2. It resolves the project directory, using the first of these that is set:
    1. `CONTEXT_GRAPH_PROJECT_DIR`
    2. `CLAUDE_PROJECT_DIR`
-   3. the stdin `workspace_roots[0]` (Cursor)
-   4. the stdin `cwd` (Claude Code)
-   5. the working directory
+   3. `CURSOR_PROJECT_DIR` (always set for Cursor hooks)
+   4. the stdin `workspace_roots[0]` (Cursor)
+   5. the stdin `cwd` (Claude Code)
+   6. the working directory
+
+   A directory inside the package's own install folder counts as unknown. The overview is then
+   graph-wide, and the plugin folder is never registered as a project.
 3. It pings Neo4j and finds the `:Project` whose path is the longest prefix of that directory. If
    there is none, it creates one, using the folder name as the id and adding `-2`, `-3`… on
    collision.
@@ -126,14 +135,15 @@ it to record what it learned. It never touches the database.
 
 | | Claude Code | Cursor |
 |---|---|---|
-| Registered in | plugin `hooks/hooks.json`, event `Stop`, timeout 30 s | project `.cursor/hooks.json`, event `stop` |
+| Registered in | plugin `hooks/hooks.json`, event `Stop`, timeout 30 s | plugin `cursor/hooks.json` (`loop_limit: 1`) or the project's `.cursor/hooks.json`, event `stop` |
 | Nudge output | `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "…"}}`, shown as "Stop hook feedback" | `{"followup_message": "…"}`, submitted as the next message |
 | Transcript format | `{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": …}]}}`, verified | read best-effort (`tool_use` items or OpenAI-style `tool_calls`), unverified; an unreadable transcript never triggers a nudge |
 
 ## MCP server
 
-The Claude Code plugin's `.mcp.json` starts the server over stdio. The Cursor entry is described
-in [Installation → Cursor](installation.md#cursor).
+The Claude Code plugin's `.mcp.json` starts the server over stdio, as shown below. The Cursor
+plugin's `mcp.json` is the same command with `${CURSOR_PLUGIN_ROOT}`, plus `CONTEXT_GRAPH_CLIENT=cursor`
+and `CONTEXT_GRAPH_PROJECT_DIR=${workspaceFolder}`.
 
 ```json
 {
@@ -151,9 +161,14 @@ in [Installation → Cursor](installation.md#cursor).
 }
 ```
 
-- **Project directory.** The server uses `CONTEXT_GRAPH_PROJECT_DIR` (set by Cursor from
-  `${workspaceFolder}`), then `CLAUDE_PROJECT_DIR` (set by Claude Code), then the working
-  directory. MCP `roots` isn't used, because the 2026-07-28 MCP revision deprecates it (SEP-2577).
+- **Project directory.** The server uses `CONTEXT_GRAPH_PROJECT_DIR` (from `${workspaceFolder}` in
+  Cursor), then `CLAUDE_PROJECT_DIR`, then `CURSOR_PROJECT_DIR`, then the working directory.
+  Unexpanded `${…}` values are ignored. If the result is inside the package's install folder, the
+  project is unknown:
+  - overview, search and writes work graph-wide
+  - `log_session` and `set_node_project` ask for an explicit project
+
+  MCP `roots` isn't used, because the 2026-07-28 MCP revision deprecates it (SEP-2577).
 - **Lazy driver.** The Neo4j driver is created on the first tool call. While no password is
   configured, the settings are re-read on every attempt. So running `/context-graph:setup`
   mid-session fixes a running server without a restart.
@@ -167,13 +182,21 @@ in [Installation → Cursor](installation.md#cursor).
 ## Usage rules: skills and Cursor rule
 
 `assets/agent-instructions.md` holds the usage policy: when to recall, what to record, how to
-deduplicate and supersede, and never to store secrets. It is the single source for:
-- the Claude skill `skills/context-graph/SKILL.md`, which is the same text plus frontmatter. A test
-  fails if the two drift apart.
-- the Cursor rule `.cursor/rules/context-graph.mdc`, written by the installer with
-  `alwaysApply: true`.
+deduplicate and supersede, and never to store secrets. It is the single source for three files:
 
-The other Claude Code skills are user commands:
+| File | Produced by |
+|---|---|
+| the Claude skill `skills/context-graph/SKILL.md` | `context-graph generate-agent-files` |
+| the Cursor plugin rule `cursor/rules/context-graph.mdc` (`alwaysApply: true`) | `context-graph generate-agent-files` |
+| the project rule `.cursor/rules/context-graph.mdc` | the CLI installer |
+
+The `AgentFiles` class renders them, and a test fails if the committed files drift from the
+source.
+
+The Cursor plugin's commands (`cursor/commands/`) mirror the Claude Code skills:
+`/context-graph-setup` and `/context-graph-status` run the CLI through `uvx` from GitHub, and
+`/context-graph-remember` stores something explicitly. The other Claude Code skills are user
+commands:
 
 | Skill | Invocation | Purpose |
 |---|---|---|

@@ -37,14 +37,29 @@ class Environment:
         """
         return cls.get("CONTEXT_GRAPH_CLIENT", default="cli")
 
+    # Variables naming the session's project, in order of precedence: an explicit client config
+    # value (e.g. Cursor's ${workspaceFolder}), then what Claude Code and Cursor export.
+    PROJECT_DIR_VARIABLES = ("CONTEXT_GRAPH_PROJECT_DIR", "CLAUDE_PROJECT_DIR", "CURSOR_PROJECT_DIR")
+
     @classmethod
     def project_dir(cls) -> str:
-        """Returns the directory of the project the session works on.
+        """Returns the directory of the project the session works on, or an empty string.
 
-        The client config sets ``CONTEXT_GRAPH_PROJECT_DIR`` (e.g. Cursor from ``${workspaceFolder}``)
-        and Claude Code sets ``CLAUDE_PROJECT_DIR``; otherwise the working directory is used.
+        Falls back to the working directory, except when that is this package's own install
+        folder (a plugin's MCP server may be started there): the project is then unknown, and
+        callers work graph-wide instead of registering the plugin folder as a project.
         """
-        return cls.get("CONTEXT_GRAPH_PROJECT_DIR", "CLAUDE_PROJECT_DIR", default=os.getcwd())
+        directory = cls.get(*cls.PROJECT_DIR_VARIABLES, default=os.getcwd())
+        return "" if cls.is_install_dir(directory) else directory
+
+    @staticmethod
+    def is_install_dir(directory: str) -> bool:
+        """Whether ``directory`` is inside the folder this package is installed or checked out in."""
+        install_root = Path(__file__).resolve().parents[3]  # <root>/src/context_graph/config
+        try:
+            return Path(directory).resolve().is_relative_to(install_root)
+        except OSError:
+            return False
 
 
 class LocalCredentials:
