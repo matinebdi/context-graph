@@ -4,15 +4,15 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Neo4j 5.26](https://img.shields.io/badge/Neo4j-5.26-008CC1)
-![Python ≥3.11](https://img.shields.io/badge/python-%E2%89%A53.11-3776AB)
+![Python 3.11–3.13](https://img.shields.io/badge/python-3.11%E2%80%933.13-3776AB)
 ![MCP](https://img.shields.io/badge/MCP-server-black)
 
 Coding agents forget everything between sessions. Context Graph gives them a memory: a Neo4j graph
 the agent reads at the start of every session and writes to as it works. It holds who you are, how
 you like to work, what was decided and why, how the project fits together, and what is still open.
 
-- **Works with Claude Code and Cursor**, and with any other MCP client. All of them share one
-  graph.
+- **A plugin for Claude Code and for Cursor**, and an MCP server for any other client. All of
+  them share one graph: what one agent learned, the others know.
 - **Scoped per project, personal everywhere.** Decisions and tasks stay with their project, while
   your preferences follow you into every project.
 - **Finds things by meaning, in any language.** Search is hybrid (keywords + local embeddings),
@@ -35,8 +35,8 @@ flowchart LR
    preferences, plus the current project's open tasks and key decisions, ranked by importance.
 2. While the agent works, it calls MCP tools to search the graph, read nodes, and record
    decisions, preferences, concepts and tasks.
-3. A rule (a Claude skill, or a Cursor rule) tells the agent when to recall and what is worth
-   recording.
+3. Usage rules (a skill in Claude Code, an always-on rule in Cursor) tell the agent when to
+   recall and what is worth recording.
 4. When a turn ends after substantial unrecorded work, a hook reminds the agent once to save
    what it learned.
 
@@ -57,22 +57,23 @@ Then run `/context-graph:setup` inside Claude Code. You only need to do this onc
 
 ### Cursor
 
-Install the **Context Graph** plugin, then run `/context-graph-setup` once per machine. Until the
-plugin is listed in the Cursor Marketplace, install it locally:
+Until the plugin is listed in the Cursor Marketplace, install it as a local plugin:
 
 ```sh
 git clone https://github.com/matinebdi/context-graph.git
+mkdir -p ~/.cursor/plugins/local
 cp -r context-graph/plugins/context-graph ~/.cursor/plugins/local/context-graph
-# then in Cursor: Developer: Reload Window
 ```
 
-Other options (team marketplace, or no plugins at all) are in
+Then run **Developer: Reload Window** in Cursor, and `/context-graph-setup` once per machine.
+
+The PowerShell commands, the team marketplace and the no-plugin installer are in
 [Installation → Cursor](docs/installation.md#cursor).
 
 ### Check that it works
 
 Start a new session. It should open with `# Context graph: …`. You can also run
-`/context-graph:status` in Claude Code, or `context-graph status` in a terminal.
+`/context-graph:status` in Claude Code, or `/context-graph-status` in Cursor.
 
 To see the graph, open **http://127.0.0.1:7475** and connect to `bolt://127.0.0.1:7688` as user
 `neo4j`. The password is in `~/.context-graph/neo4j-password`.
@@ -103,13 +104,18 @@ overwritten, so the history stays. See [Data model](docs/data-model.md).
 Most of it happens automatically: the agent recalls and records as it works. You can also steer
 it:
 
-| | Claude Code | Cursor / terminal |
-|---|---|---|
-| Store something explicitly | `/context-graph:remember <text>` | ask the agent to remember it |
-| Check the connection | `/context-graph:status` | `context-graph status` |
-| Search the graph | ask the agent | `context-graph search "<words>"` |
-| Tidy up (duplicates, orphans, stale tasks) | ask the agent to review the graph | `context-graph review` |
-| Back up the graph | | `context-graph export backup.json` |
+| | Claude Code | Cursor | Terminal |
+|---|---|---|---|
+| Store something explicitly | `/context-graph:remember <text>` | `/context-graph-remember` | |
+| Check the connection | `/context-graph:status` | `/context-graph-status` | `context-graph status` |
+| Search the graph | ask the agent | ask the agent | `context-graph search "<words>"` |
+| Tidy up (duplicates, orphans, stale tasks) | ask the agent to review the graph | same | `context-graph review` |
+| Back up the graph | | | `context-graph export backup.json` |
+
+The terminal commands come with the CLI: run
+`uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"`
+once, or prefix a single command with
+`uvx --from "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"`.
 
 ## Documentation
 
