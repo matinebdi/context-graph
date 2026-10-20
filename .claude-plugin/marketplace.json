@@ -1,5 +1,6 @@
 {
   "name": "context-graph",
+  "description": "Context Graph: persistent Neo4j graph memory for Claude Code",
   "owner": {
     "name": "Matin Ebadi"
   },

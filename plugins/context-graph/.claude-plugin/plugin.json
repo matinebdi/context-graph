@@ -6,6 +6,9 @@
   "author": {
     "name": "Matin Ebadi"
   },
+  "homepage": "https://github.com/matinebdi/context-graph-claude",
+  "repository": "https://github.com/matinebdi/context-graph-claude",
+  "license": "MIT",
   "keywords": ["memory", "knowledge-graph", "context", "neo4j", "mcp"],
   "userConfig": {
     "neo4j_uri": {
