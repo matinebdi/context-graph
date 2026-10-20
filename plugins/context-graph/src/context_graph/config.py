@@ -1,12 +1,4 @@
-"""Connection settings, resolved from the environment and the local password file.
 
-Resolution order for each value:
-  CONTEXT_GRAPH_NEO4J_*   (set by the plugin's .mcp.json from userConfig)
-  CLAUDE_PLUGIN_OPTION_*  (exported by Claude Code to plugin hooks)
-  defaults for the bundled local Docker container
-The local container's password is generated on first `context-graph up` and kept in
-~/.context-graph/neo4j-password (override the folder with CONTEXT_GRAPH_HOME).
-"""
 
 from __future__ import annotations
 
@@ -48,7 +40,10 @@ def ensure_local_password() -> str:
 
 
 def project_dir() -> str:
-    return _env("CLAUDE_PROJECT_DIR", default=os.getcwd())
+    """The project the session works on: set explicitly by the client config
+    (CONTEXT_GRAPH_PROJECT_DIR, e.g. Cursor's ${workspaceFolder}), by Claude Code
+    (CLAUDE_PROJECT_DIR), or else the process working directory."""
+    return _env("CONTEXT_GRAPH_PROJECT_DIR", "CLAUDE_PROJECT_DIR", default=os.getcwd())
 
 
 @dataclass

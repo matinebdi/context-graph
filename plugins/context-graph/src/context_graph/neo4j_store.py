@@ -68,8 +68,9 @@ class Neo4jStore:
             s = self.settings
             if not s.password:
                 raise GraphError(
-                    "no Neo4j password configured. Run /context-graph:setup to start the local "
-                    "database, or set the plugin's neo4j_* options for an external one."
+                    "no Neo4j password configured. Start the local database with `context-graph up` "
+                    "(/context-graph:setup in Claude Code), or configure an external one with the "
+                    "CONTEXT_GRAPH_NEO4J_* settings."
                 )
             self._driver = GraphDatabase.driver(
                 s.uri, auth=(s.user, s.password),
@@ -92,7 +93,8 @@ class Neo4jStore:
         except ServiceUnavailable as e:
             raise GraphError(
                 f"cannot reach Neo4j at {self.settings.uri}. Is it running? "
-                "Run /context-graph:setup (local Docker) or check the plugin's neo4j_uri option."
+                "Start it with `context-graph up` (/context-graph:setup in Claude Code), or check the "
+                "configured Neo4j URI."
             ) from e
         except AuthError as e:
             raise GraphError(f"Neo4j rejected the credentials for user {self.settings.user!r}.") from e

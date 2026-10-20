@@ -18,7 +18,7 @@ allowed-tools: Bash
    the `neo4j:5.26-community` image, which can take a few minutes.
 
    ```bash
-   UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" context-graph up
+   UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m context_graph.cli up
    ```
 
    - The command creates a random password in `~/.context-graph/neo4j-password` if one doesn't
@@ -30,7 +30,7 @@ allowed-tools: Bash
 3. Check the result:
 
    ```bash
-   UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" context-graph status
+   UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m context_graph.cli status
    ```
 
 4. Tell the user:

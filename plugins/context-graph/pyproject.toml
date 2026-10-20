@@ -1,6 +1,6 @@
 [project]
 name = "context-graph"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude Code plugin: long-term memory for Claude as a Neo4j knowledge graph (MCP server + CLI)."
 license = "MIT"
 requires-python = ">=3.11"

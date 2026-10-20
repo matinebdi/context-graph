@@ -1,8 +1,10 @@
-"""Command line for humans, skills and Claude Code hooks.
+"""Command line for humans, skills and client hooks.
 
+    context-graph install cursor|claude [--dir D]   # wire the graph into an AI client for a project
+    context-graph uninstall cursor [--dir D]
     context-graph up | down            # start/stop the bundled local Neo4j (Docker) and init schema
     context-graph status
-    context-graph hook session-start   # SessionStart hook: reads hook JSON on stdin, prints context
+    context-graph hook session-start [--format claude|cursor]   # session-start hook: hook JSON on stdin
     context-graph overview [--all]
     context-graph show <id> [--depth 2]
     context-graph search <query> [--type T]
@@ -20,12 +22,13 @@ import sys
 import time
 from pathlib import Path
 
+from . import install
 from .config import Settings, ensure_local_password, home_dir, project_dir
 from .model import GraphError, Node
 from .neo4j_store import Neo4jStore
 from .render import brief, render_node, render_overview
 
-COMPOSE_FILE = Path(__file__).resolve().parents[2] / "docker" / "compose.yml"
+COMPOSE_FILE = Path(__file__).resolve().parent / "assets" / "compose.yml"
 
 HOOK_FOOTER = """\
 ---
@@ -35,25 +38,42 @@ record durable facts, preferences, decisions (with the why), components, resourc
 with upsert_node as you learn them. Call log_session after meaningful work."""
 
 OFFLINE = "[context-graph] The context graph is offline ({reason}). {hint}"
-HINT_SETUP = "Tell the user they can run /context-graph:setup to start it."
-HINT_NO_DOCKER = (
-    "Docker is not installed (or not on PATH), and the local database needs it. Tell the user to "
-    "either install Docker Desktop and run /context-graph:setup, or point the plugin at an external "
-    "Neo4j (for example a free Neo4j Aura instance) with the neo4j_* options in /config."
-)
+# How to start the database / configure an external one, per client.
+START = {"claude": "/context-graph:setup", "cursor": "`context-graph up` in a terminal"}
+EXTERNAL = {
+    "claude": "the plugin's neo4j_* options in /config",
+    "cursor": "CONTEXT_GRAPH_NEO4J_URI / _USER / _PASSWORD in the env of .cursor/mcp.json",
+}
 
 
-def offline_hint(uri: str) -> str:
+def offline_hint(uri: str, client: str = "claude") -> str:
     local = "127.0.0.1" in uri or "localhost" in uri
-    return HINT_NO_DOCKER if local and shutil.which("docker") is None else HINT_SETUP
+    if local and shutil.which("docker") is None:
+        return (
+            "Docker is not installed (or not on PATH), and the local database needs it. Tell the "
+            f"user to either install Docker Desktop and run {START[client]}, or point the context "
+            f"graph at an external Neo4j (for example a free Neo4j Aura instance) with {EXTERNAL[client]}."
+        )
+    return f"Tell the user they can run {START[client]} to start it."
 
 
-def hook_session_start(store: Neo4jStore) -> str:
+def hook_directory(payload: dict) -> str:
+    roots = payload.get("workspace_roots") or []
+    return (os.environ.get("CONTEXT_GRAPH_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR")
+            or (roots[0] if roots else None) or payload.get("cwd") or os.getcwd())
+
+
+def hook_session_start(store: Neo4jStore, client: str = "claude") -> str:
+    """Context for the start of a session: plain text for Claude Code, JSON for Cursor."""
     try:
         payload = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:
         payload = {}
-    directory = os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd()
+    text = session_context(store, hook_directory(payload), client)
+    return json.dumps({"additional_context": text}) if client == "cursor" else text
+
+
+def session_context(store: Neo4jStore, directory: str, client: str) -> str:
     try:
         store.ping()
         project = store.ensure_project(directory)
@@ -64,7 +84,7 @@ def hook_session_start(store: Neo4jStore) -> str:
         ]
         return "\n\n".join(parts)
     except GraphError as e:
-        return OFFLINE.format(reason=str(e).split(". ")[0], hint=offline_hint(store.settings.uri))
+        return OFFLINE.format(reason=str(e).split(". ")[0], hint=offline_hint(store.settings.uri, client))
 
 
 def compose(*args: str, password: str) -> int:
@@ -119,6 +139,33 @@ def cmd_status(store: Neo4jStore, directory: str) -> int:
     return 0
 
 
+def cmd_install(action: str, client: str, project: Path) -> int:
+    if client == "claude":
+        print(install.CLAUDE_STEPS if action == "install" else
+              "claude plugin uninstall context-graph@context-graph  (run inside the project)")
+        return 0
+    do_install, do_uninstall = install.CLIENTS[client]
+    try:
+        changed = (do_install if action == "install" else do_uninstall)(project)
+    except GraphError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    if action == "uninstall":
+        print("Removed from: " + (", ".join(changed) or "nothing to remove"))
+        return 0
+    print(f"Wired the context graph into {client} for {project.resolve()}:")
+    for f in changed:
+        print(f"  {f}")
+    print(
+        "\nNext:\n"
+        "  1. context-graph up        (once per machine: starts the local Neo4j in Docker)\n"
+        "  2. Restart Cursor, then enable the `context-graph` server under Settings -> MCP if asked.\n"
+        "  3. The paths written in .cursor/ are specific to this machine: each teammate runs\n"
+        "     `context-graph install cursor` themselves instead of sharing those files."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="context-graph")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -128,6 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     p_status.add_argument("--dir", default=None)
     p_hook = sub.add_parser("hook")
     p_hook.add_argument("event", choices=["session-start"])
+    p_hook.add_argument("--format", choices=["claude", "cursor"], default="claude")
+    for name, text in (("install", "wire the context graph into an AI client for a project"),
+                       ("uninstall", "remove what `install` added")):
+        p = sub.add_parser(name, help=text)
+        p.add_argument("client", choices=sorted([*install.CLIENTS, "claude"]))
+        p.add_argument("--dir", default=".", help="project directory (default: current)")
     sub.add_parser("init-schema")
     p_ov = sub.add_parser("overview")
     p_ov.add_argument("--all", action="store_true", help="ignore the current project scope")
@@ -150,10 +203,13 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
+    if args.cmd in ("install", "uninstall"):
+        return cmd_install(args.cmd, args.client, Path(args.dir))
+
     store = Neo4jStore()
     try:
         if args.cmd == "hook":
-            print(hook_session_start(store))
+            print(hook_session_start(store, args.format))
             return 0  # a hook must never block the session
         if args.cmd == "up":
             return cmd_up()

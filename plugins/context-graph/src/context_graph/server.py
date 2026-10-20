@@ -15,7 +15,7 @@ from .neo4j_store import Neo4jStore
 from .render import brief, render_node, render_overview, render_project_context
 
 INSTRUCTIONS = f"""\
-Persistent context graph (Neo4j) shared across the projects where this plugin is enabled.
+Persistent context graph (Neo4j) shared across every project where it is enabled.
 It is your long-term memory of the user and their work.
 
 Read: call graph_overview when starting substantial work (the SessionStart hook may already

@@ -1,23 +1,32 @@
-# Context Graph — persistent graph memory for Claude Code
+# Context Graph — persistent graph memory for AI coding agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Neo4j 5.26](https://img.shields.io/badge/Neo4j-5.26%20community-008CC1)
 ![Python ≥3.11](https://img.shields.io/badge/python-%E2%89%A53.11-3776AB)
 ![MCP](https://img.shields.io/badge/MCP-stdio-black)
 
-`context-graph` is a Claude Code plugin that gives Claude a long-term memory. The memory is a
-property graph stored in Neo4j.
+`context-graph` gives AI coding agents a long-term memory. The memory is a property graph stored
+in Neo4j and exposed through a standard MCP server. Supported clients:
 
-When the plugin is enabled in a project, Claude reads and writes typed nodes through an MCP
+| Client | Integration | Session-start context | Usage rules |
+|---|---|---|---|
+| **Claude Code** | plugin (marketplace in this repo) | `SessionStart` hook | skill |
+| **Cursor** | `context-graph install cursor` | `sessionStart` hook (`.cursor/hooks.json`) | always-on rule (`.cursor/rules/context-graph.mdc`) |
+| any other MCP client | point it at `python -m context_graph.server` | none (the agent calls `graph_overview`) | server `instructions` |
+
+When it is enabled in a project, the agent reads and writes typed nodes through the MCP
 server. Nodes cover the user, preferences, decisions, concepts, resources, tasks and sessions,
 linked by typed relationships. The data lives in a single shared graph. Each node is scoped to the
 project it came from, while knowledge about the user is global and follows them into every
-project. A `SessionStart` hook injects a compact overview into Claude's context, so every session
-starts with what earlier sessions learned.
+project. A session-start hook injects a compact overview into the agent's context, so every
+session starts with what earlier sessions learned. All clients share the same graph: what Claude
+Code learned is there in Cursor, and the other way round.
 
-This repository is two things at once:
+This repository is three things at once:
 - a **Claude Code plugin marketplace**: `.claude-plugin/marketplace.json`
-- the **plugin** itself: `plugins/context-graph/`
+- the **Claude Code plugin**: `plugins/context-graph/`
+- the **Python package** `context-graph` (same folder), which provides the MCP server and the
+  `context-graph` CLI, including the installers for other clients
 
 ---
 
@@ -47,13 +56,13 @@ This repository is two things at once:
 
 ```mermaid
 flowchart LR
-    subgraph CC["Claude Code session (project dir)"]
-        H["SessionStart hook<br/>context-graph hook session-start"]
+    subgraph CC["Claude Code / Cursor session (project dir)"]
+        H["session-start hook<br/>python -m context_graph.cli hook session-start"]
         M["MCP client"]
-        S["Skills<br/>context-graph · setup · status · remember"]
+        S["Claude skills / Cursor rule"]
     end
 
-    subgraph PL["Plugin process (uv-managed venv in CLAUDE_PLUGIN_DATA)"]
+    subgraph PL["Python env (plugin venv in CLAUDE_PLUGIN_DATA, or a uv tool env)"]
         SRV["MCP server<br/>context_graph.server (stdio)"]
         CLI["CLI<br/>context_graph.cli"]
         ST["Neo4jStore<br/>context_graph.neo4j_store"]
@@ -63,7 +72,7 @@ flowchart LR
         NEO[("Neo4j 5.26 community<br/>bolt 127.0.0.1:7688<br/>http 127.0.0.1:7475")]
     end
 
-    H -- "stdin: hook JSON (cwd)<br/>stdout: markdown → context" --> CLI
+    H -- "stdin: hook JSON<br/>stdout: markdown (Claude) / JSON (Cursor) → context" --> CLI
     M <-- "JSON-RPC over stdio" --> SRV
     S -- "Bash: uv run … context-graph up/status" --> CLI
     SRV --> ST
@@ -78,11 +87,17 @@ flowchart LR
 | Store | `neo4j_store.py` | all Cypher: schema, CRUD, scoping, full-text search, read-only queries, export/import |
 | Render | `render.py` | markdown views (node page, overview, project context) shared by the server and the hook |
 | Server | `server.py` | MCP server (`mcp` SDK 2.x `MCPServer`, stdio) exposing 11 tools plus server instructions |
-| CLI | `cli.py` | `up` / `down` / `status` / `hook` / `overview` / `show` / `search` / `export` / `import` / `import-markdown` / `init-schema` |
+| CLI | `cli.py` | `up` / `down` / `status` / `install` / `uninstall` / `hook` / `overview` / `show` / `search` / `export` / `import` / `import-markdown` / `init-schema` |
+| Installers | `install.py` | per-client config writers (Cursor): idempotent JSON merges, and uninstall |
+| Assets | `assets/` | `agent-instructions.md` (single source for the Claude skill and the Cursor rule) and `compose.yml` |
 
 Design choices:
 - **Stateless processes.** The MCP server and the hook hold no state between calls apart from a
   `project_dir → project_id` cache. All state lives in Neo4j.
+- **One process model for every client.** The server and hooks always run as
+  `python -m context_graph.<module>` from an absolute interpreter path. This doesn't depend on
+  the client's `PATH`, and it works where generated console-script `.exe` launchers are blocked
+  (Windows Smart App Control).
 - **Fail-open hook.** If Neo4j is unreachable, the hook prints a one-line notice and exits `0`. A
   missing database never blocks a session.
 - **Atomic writes.** `upsert_node` writes the node, its relations and its project link in a single
@@ -98,29 +113,29 @@ Design choices:
 
 | Component | Version | Why |
 |---|---|---|
-| Claude Code | recent 2.x with plugin support (`claude plugin …`) | loads the plugin, MCP server, hook and skills |
+| Claude Code **or** Cursor | Claude Code 2.x with plugins; Cursor with MCP and hooks | the client |
 | Docker Engine / Docker Desktop | Compose v2 (`docker compose`) | runs the bundled Neo4j. **Optional**: without Docker, use an external Neo4j such as a free Aura instance ([§8](#8-configuration-reference)) |
 | [uv](https://docs.astral.sh/uv/) | ≥ 0.4 | creates the Python environment and runs the server and CLI. Downloads a Python ≥ 3.11 automatically if none is present |
 | Network | outbound HTTPS on first run | PyPI packages and the `neo4j:5.26-community` image (~600 MB) |
-| RAM | ~1.5 GB free for the container | heap max 1 GB plus 512 MB page cache (tunable in `docker/compose.yml`) |
+| RAM | ~1.5 GB free for the container | heap max 1 GB plus 512 MB page cache (tunable in `assets/compose.yml`) |
 
 Platforms: developed and verified on **Windows 11** (Git Bash runs the hooks). macOS and Linux
 are expected to work, since everything is POSIX shell plus Python, but haven't been verified yet.
 
-`uv` and `docker` must be on the `PATH` of the process that launches Claude Code. If Claude Code
-is started from an IDE or a desktop shortcut, make sure that environment inherits your shell's
-`PATH`.
+For Claude Code, `uv` and `docker` must be on the `PATH` of the process that launches it. If it is
+started from an IDE or a desktop shortcut, make sure that environment inherits your shell's
+`PATH`. Cursor doesn't need this, because its config contains absolute paths.
 
 ---
 
 ## 3. Installation and setup
 
-### 3.1 Install the plugin
+### 3.1 Claude Code (plugin)
 
 **From GitHub.** The marketplace is named `context-graph`:
 
 ```sh
-claude plugin marketplace add matinebdi/context-graph-claude
+claude plugin marketplace add matinebdi/context-graph
 ```
 
 Then, in each project that should have graph memory:
@@ -133,7 +148,7 @@ claude plugin install context-graph@context-graph --scope project
 Inside Claude Code you can do both steps at once:
 
 ```
-/plugin install context-graph --marketplace matinebdi/context-graph-claude
+/plugin install context-graph --marketplace matinebdi/context-graph
 ```
 
 The `--scope` flag decides where the plugin is enabled:
@@ -147,22 +162,62 @@ The `--scope` flag decides where the plugin is enabled:
 **From a local clone** (for development):
 
 ```sh
-git clone https://github.com/matinebdi/context-graph-claude.git
-claude plugin marketplace add ./context-graph-claude
+git clone https://github.com/matinebdi/context-graph.git
+claude plugin marketplace add ./context-graph
 ```
 
 A directory marketplace is read in place, so edits apply after `/reload-plugins` or a restart.
 
-### 3.2 Plugin options (userConfig)
+### 3.2 Cursor
+
+Install the package once per machine as a uv tool. That puts `context-graph` on your `PATH`:
+
+```sh
+uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"
+context-graph up                      # once per machine: local Neo4j in Docker (see §3.4)
+```
+
+Then, in each project that should have graph memory:
+
+```sh
+cd /path/to/your/project
+context-graph install cursor          # or: context-graph install cursor --dir /path/to/project
+```
+
+The installer merges three entries into the project's `.cursor/` folder. Existing servers, hooks
+and rules are left untouched:
+
+| File | Entry |
+|---|---|
+| `.cursor/mcp.json` | `mcpServers.context-graph`: `{"type":"stdio","command":"<abs python>","args":["-m","context_graph.server"],"env":{"CONTEXT_GRAPH_PROJECT_DIR":"${workspaceFolder}"}}` |
+| `.cursor/hooks.json` | `hooks.sessionStart[]`: `"<abs python>" -m context_graph.cli hook session-start --format cursor`, which returns `{"additional_context": "…"}` |
+| `.cursor/rules/context-graph.mdc` | `alwaysApply: true` rule generated from `assets/agent-instructions.md` |
+
+Restart Cursor, and enable the `context-graph` server under **Settings → MCP** if Cursor asks.
+`context-graph uninstall cursor` removes exactly these entries.
+
+Notes:
+- **Machine-specific paths.** The paths written to `.cursor/` belong to your machine. Each
+  teammate runs `context-graph install cursor` themselves, and you probably want `.cursor/mcp.json`
+  and `.cursor/hooks.json` out of version control.
+- **Project detection.** Cursor interpolates `${workspaceFolder}` into `CONTEXT_GRAPH_PROJECT_DIR`,
+  which is how the server knows which project a session belongs to. The hook reads
+  `workspace_roots` from its stdin JSON instead.
+- **Updates.** Run `uv tool upgrade context-graph`, then rerun `context-graph install cursor` if
+  the interpreter path changed.
+- **No `uvx`.** The installer refuses to run from an ephemeral `uvx` environment, because uv may
+  delete those and the configs would then point at nothing.
+
+### 3.3 Claude Code plugin options (userConfig)
 
 When the plugin is enabled, Claude Code may prompt for four options. **For the bundled local
 database, accept the defaults and leave the password empty.** See
 [§8](#8-configuration-reference) for the full table. The options can be changed later with
 `/plugin configure context-graph@context-graph` or in `/config`.
 
-### 3.3 Start the database (once per machine)
+### 3.4 Start the database (once per machine)
 
-Inside Claude Code:
+Inside Claude Code (or with `context-graph up` in a terminal):
 
 ```
 /context-graph:setup
@@ -174,7 +229,7 @@ The command does the following:
    1. Generates a 192-bit random password (`secrets.token_urlsafe(24)`) into
       `~/.context-graph/neo4j-password`, with mode `0600` where supported, if the file doesn't
       exist yet.
-   2. Runs `docker compose -f <plugin>/docker/compose.yml up -d`, with
+   2. Runs `docker compose -f <package>/assets/compose.yml up -d`, with
       `CONTEXT_GRAPH_NEO4J_PASSWORD` exported to Compose.
    3. Polls `verify_connectivity()` every 3 seconds, for up to 180 seconds.
    4. Applies the schema (constraints and indexes, all `IF NOT EXISTS`, so it is idempotent).
@@ -188,7 +243,7 @@ uv run context-graph up
 uv run context-graph status
 ```
 
-### 3.4 Verify
+### 3.5 Verify
 
 ```
 /context-graph:status
@@ -216,26 +271,29 @@ To browse the graph, open **http://127.0.0.1:7475** and connect with:
 
 ### 4.1 Session start (hook)
 
-`hooks/hooks.json` registers a `SessionStart` command hook with matcher
-`startup|resume|clear|compact` and a 120-second timeout:
+Both clients run the same entry point, `python -m context_graph.cli hook session-start`. Only
+how it is launched and its output format differ:
 
-```sh
-UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" \
-  uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" context-graph hook session-start
-```
+| | Claude Code | Cursor |
+|---|---|---|
+| Registered in | plugin `hooks/hooks.json`, event `SessionStart`, matcher `startup\|resume\|clear\|compact`, timeout 120 s | project `.cursor/hooks.json`, event `sessionStart` |
+| Command | `if command -v uv …; then UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m context_graph.cli hook session-start; else echo "<uv missing notice>"; fi` | `"<abs python>" -m context_graph.cli hook session-start --format cursor` |
+| Project directory | `CONTEXT_GRAPH_PROJECT_DIR`, then `CLAUDE_PROJECT_DIR`, then stdin `workspace_roots[0]`, then stdin `cwd`, then `os.getcwd()` | same order |
+| Output | plain markdown on stdout | `{"additional_context": "<markdown>"}` on stdout |
+| Offline hint | `/context-graph:setup`, plugin options in `/config` | `context-graph up`, `CONTEXT_GRAPH_NEO4J_*` env in `.cursor/mcp.json` |
 
-Each hook run goes through these steps:
+Each Claude Code hook run goes through these steps (the Cursor run is the same from step 2 on):
 1. `uv` syncs the locked environment into `${CLAUDE_PLUGIN_DATA}/venv`.
    - The first run installs the dependencies, which takes seconds to a minute.
    - Later runs reuse the environment.
    - `--frozen` stops `uv` from rewriting `uv.lock` inside the (read-only) plugin cache.
-2. The hook reads the hook JSON from stdin. The project directory comes from
-   `CLAUDE_PROJECT_DIR`, then the hook's `cwd`, then `os.getcwd()`.
+2. The hook reads the hook JSON from stdin and resolves the project directory as shown in the
+   table above.
 3. It calls `ping()`, then `ensure_project(dir)`, which finds the `:Project` whose `path_key` is
    the longest prefix of the directory. If there is none, it creates one, with
    `id = slugify(basename)` and suffixes `-2`, `-3`, … on collision.
-4. It prints markdown to stdout. Claude Code adds `SessionStart` stdout to the model context. The
-   output contains:
+4. It prints the context: plain markdown for Claude Code, which adds `SessionStart` stdout to the
+   model context, or the JSON shown above for Cursor. The content is:
    - **Graph overview:** counts by type, people, preferences, projects, the current project's open
      tasks, decisions and last 3 sessions, and recently updated nodes.
    - **Project page:** the current project's node with its relations and members.
@@ -245,12 +303,14 @@ Each hook run goes through these steps:
 
 ### 4.2 MCP server
 
-`.mcp.json` starts the server over stdio:
+The Claude Code plugin's `.mcp.json` starts the server over stdio. Cursor's entry is shown in
+[§3.2](#32-cursor).
 
 ```json
 {
   "command": "uv",
-  "args": ["run", "--quiet", "--frozen", "--project", "${CLAUDE_PLUGIN_ROOT}", "context-graph-mcp"],
+  "args": ["run", "--quiet", "--frozen", "--project", "${CLAUDE_PLUGIN_ROOT}",
+           "python", "-m", "context_graph.server"],
   "env": {
     "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv",
     "CONTEXT_GRAPH_NEO4J_URI": "${user_config.neo4j_uri}",
@@ -262,9 +322,13 @@ Each hook run goes through these steps:
 ```
 
 How the server behaves:
-- **Working directory.** `--project` is used instead of `--directory` so the server's working
-  directory stays the session's project directory. `CLAUDE_PROJECT_DIR` is preferred when it is
-  set.
+- **Project directory.** Resolved as `CONTEXT_GRAPH_PROJECT_DIR` (Cursor sets it from
+  `${workspaceFolder}`), then `CLAUDE_PROJECT_DIR` (set by Claude Code), then the working
+  directory. `--project` is used instead of `--directory` so that the working-directory fallback
+  stays meaningful. MCP `roots` isn't used, because it was deprecated in the 2026-07-28 MCP
+  revision (SEP-2577).
+- **Launch.** It always runs as `python -m context_graph.server`, never through the generated
+  `context-graph-mcp` console script, which Windows Smart App Control can block.
 - **Lazy driver.** The Neo4j driver is created on the first tool call. If no password was
   available at startup, the settings are re-read from env and the password file on every
   connection attempt. So running `/context-graph:setup` mid-session fixes the server without a
@@ -275,10 +339,18 @@ How the server behaves:
   - `max_transaction_retry_time=5s`
   - `notifications_min_severity="OFF"`, because in a schema-free graph the
     "unknown property / relationship type" notices are noise
-- **Errors.** Every tool catches `GraphError` and returns `Error: …` as text, so Claude sees a
+- **Errors.** Every tool catches `GraphError` and returns `Error: …` as text, so the agent sees a
   readable failure instead of a protocol error.
 
-### 4.3 Skills
+### 4.3 Skills (Claude Code) and rules (Cursor)
+
+`assets/agent-instructions.md` holds the usage policy. It is the single source for:
+- the Claude skill `skills/context-graph/SKILL.md`, which is that file plus frontmatter. A test
+  fails if the two drift apart.
+- the Cursor rule `.cursor/rules/context-graph.mdc`, which the installer writes with
+  `alwaysApply: true`.
+
+The other skills are Claude Code commands:
 
 | Skill | Invocation | Purpose |
 |---|---|---|
@@ -489,6 +561,7 @@ string such as `${user_config.neo4j_password}`.
 | `CONTEXT_GRAPH_HOME` | `~/.context-graph` | all | location of `neo4j-password` |
 | `CONTEXT_GRAPH_BOLT_PORT` | `7688` | `up`, Compose | host bolt port; also the advertised address. Update `neo4j_uri` to match |
 | `CONTEXT_GRAPH_HTTP_PORT` | `7475` | `up`, Compose | host port for Neo4j Browser / HTTP API |
+| `CONTEXT_GRAPH_PROJECT_DIR` | *(set by the Cursor config)* | server, hook | project directory used for scoping; takes precedence over `CLAUDE_PROJECT_DIR` |
 | `CLAUDE_PROJECT_DIR` | *(set by Claude Code)* | server, hook | project directory used for scoping |
 | `UV_PROJECT_ENVIRONMENT` | `${CLAUDE_PLUGIN_DATA}/venv` | hook, server, skills | location of the plugin venv; it survives plugin updates |
 | `CONTEXT_GRAPH_TEST_URI` / `CONTEXT_GRAPH_TEST_PASSWORD` | — | tests | use an existing **disposable** database instead of a throwaway container. Tests wipe it |
@@ -497,7 +570,7 @@ string such as `${user_config.neo4j_password}`.
 
 ## 9. Local database (Docker)
 
-`plugins/context-graph/docker/compose.yml` (Compose project `context-graph`):
+`plugins/context-graph/src/context_graph/assets/compose.yml` (Compose project `context-graph`). It ships inside the Python package, so `context-graph up` works from a uv tool install too:
 
 | Setting | Value | Reason |
 |---|---|---|
@@ -529,8 +602,9 @@ uv run --project plugins/context-graph context-graph down    # stop, keep data
 
 ## 10. CLI reference
 
-Run the CLI from `plugins/context-graph/` with `uv run context-graph <cmd>`. From any directory,
-use `uv run --project <path-to>/plugins/context-graph context-graph <cmd>`.
+With the uv tool install (§3.2), run `context-graph <cmd>` from anywhere. From a clone, run
+`uv run context-graph <cmd>` in `plugins/context-graph/`. `python -m context_graph.cli <cmd>` is
+equivalent, and works where console-script launchers are blocked.
 
 | Command | Description |
 |---|---|
@@ -538,7 +612,10 @@ use `uv run --project <path-to>/plugins/context-graph context-graph <cmd>`.
 | `down` | `docker compose stop` (the data volume is kept) |
 | `status [--dir D]` | URI, connectivity, node counts by type, project mapped to `D` (default: project dir / cwd) |
 | `init-schema` | apply constraints and indexes (idempotent) |
-| `hook session-start` | the SessionStart hook entry point (reads hook JSON on stdin) |
+| `install cursor [--dir D]` | merge the MCP server, sessionStart hook and rule into `D/.cursor/` (default: cwd) |
+| `uninstall cursor [--dir D]` | remove exactly those entries |
+| `install claude` | print the Claude Code plugin install commands |
+| `hook session-start [--format claude\|cursor]` | session-start hook entry point (reads hook JSON on stdin) |
 | `overview [--all]` | the overview the hook injects; registers the cwd as a project if needed |
 | `show <id> [--depth 1\|2]` | node page |
 | `search <query> [--type T]` | full-text search |
@@ -610,7 +687,11 @@ every user can read and write every node. There is no per-user access control in
 | First session hangs for a while | `uv` is installing dependencies into `${CLAUDE_PLUGIN_DATA}/venv` | wait once; the hook timeout is 120 s. Pre-warm with `/context-graph:status` |
 | `uv: command not found` in hook or MCP logs | `uv` isn't on the `PATH` of the Claude Code process | install uv, then restart Claude Code from a shell that has it on `PATH` |
 | MCP tools return `Error: no Neo4j password configured` | setup never ran on this machine | `/context-graph:setup`; the next tool call reconnects automatically |
-| `/mcp` shows the server as failed | `uv` sync error, offline PyPI, or Python download blocked | run `uv run --frozen --project <plugin-root> context-graph-mcp` manually to see stderr |
+| `/mcp` shows the server as failed | `uv` sync error, offline PyPI, or Python download blocked | run `uv run --frozen --project <plugin-root> python -m context_graph.server` manually to see stderr |
+| `[WinError 4551] An Application Control policy has blocked this file` | Windows Smart App Control blocks freshly generated, unsigned console-script `.exe` launchers | launch through the interpreter: `python -m context_graph.cli …`. All configs written by this project already do that |
+| Cursor: no `context-graph` tools | server disabled, or the config points at a moved interpreter | enable it in **Settings → MCP**, rerun `context-graph install cursor`, restart Cursor |
+| Cursor: wrong project in the overview | `${workspaceFolder}` isn't the project root (a nested `.cursor/`) | run `context-graph install cursor` in the project root |
+| `context-graph install` refuses with *temporary uvx environment* | it was run through `uvx`, whose environment can be deleted | `uv tool install "git+https://github.com/matinebdi/context-graph#subdirectory=plugins/context-graph"` first |
 
 Logs: hook stdout and stderr appear in Claude Code's debug output (`claude --debug`). MCP server
 stderr goes to the MCP logs. Neo4j logs: `docker logs context-graph-neo4j`.
@@ -620,10 +701,10 @@ stderr goes to the MCP logs. Neo4j logs: `docker logs context-graph-neo4j`.
 ## 14. Development
 
 ```sh
-git clone https://github.com/matinebdi/context-graph-claude.git
-cd context-graph-claude/plugins/context-graph
+git clone https://github.com/matinebdi/context-graph.git
+cd context-graph/plugins/context-graph
 uv sync                           # creates .venv with dev deps (pytest)
-uv run pytest -q                  # unit + integration
+uv run pytest -q                  # unit, installer and integration tests
 claude plugin validate .          # manifest, hooks, MCP config
 claude plugin validate ../..      # marketplace
 ```
@@ -635,6 +716,9 @@ The test suite has two parts:
   - Lucene query building
   - the legacy parser
   - config resolution with unresolved placeholders
+- **`tests/test_install.py`** covers the Cursor installer: merging with existing configs,
+  idempotency, uninstall, refusing to clobber invalid JSON or to run from `uvx`, hook command
+  quoting, hook directory precedence, and that the Claude skill matches `agent-instructions.md`.
 - **`tests/test_neo4j_store.py`** holds integration tests against a **throwaway** container:
   - The container is `context-graph-test-neo4j` on `127.0.0.1:17687`, created and removed by a
     session fixture. They are skipped when Docker is unavailable, and never touch your real
@@ -656,7 +740,7 @@ example, with the Python SDK:
 
 ```python
 StdioServerParameters(command="uv",
-    args=["run", "--frozen", "--project", "plugins/context-graph", "context-graph-mcp"],
+    args=["run", "--frozen", "--project", "plugins/context-graph", "python", "-m", "context_graph.server"],
     env={**os.environ, "CLAUDE_PROJECT_DIR": "/some/project"})
 ```
 
@@ -679,18 +763,21 @@ what's in `uv.lock`.
 └── plugins/context-graph/            # ← ${CLAUDE_PLUGIN_ROOT}
     ├── .claude-plugin/plugin.json    # manifest + userConfig
     ├── .mcp.json                     # stdio MCP server via uv
-    ├── hooks/hooks.json              # SessionStart → context-graph hook session-start
+    ├── hooks/hooks.json              # SessionStart → python -m context_graph.cli hook session-start
     ├── skills/
     │   ├── context-graph/SKILL.md    # usage policy (model-invoked)
     │   ├── setup/SKILL.md            # /context-graph:setup
     │   ├── status/SKILL.md           # /context-graph:status
     │   └── remember/SKILL.md         # /context-graph:remember
-    ├── docker/compose.yml            # local Neo4j
     ├── pyproject.toml · uv.lock      # package "context-graph"; entry points context-graph, context-graph-mcp
     ├── src/context_graph/
-    │   ├── model.py  config.py  neo4j_store.py  render.py  server.py  cli.py
+    │   ├── model.py  config.py  neo4j_store.py  render.py  server.py  cli.py  install.py
+    │   └── assets/
+    │       ├── agent-instructions.md # usage policy: source of the Claude skill and the Cursor rule
+    │       └── compose.yml           # local Neo4j
     └── tests/
         ├── test_model.py
+        ├── test_install.py
         └── test_neo4j_store.py
 ```
 
@@ -699,8 +786,10 @@ what's in `uv.lock`.
 ## 16. Uninstall
 
 ```sh
-claude plugin uninstall context-graph@context-graph              # add --keep-data to keep the venv in CLAUDE_PLUGIN_DATA
-uv run --project <plugin-root> context-graph down                # stop the container
+claude plugin uninstall context-graph@context-graph              # Claude Code; add --keep-data to keep the venv in CLAUDE_PLUGIN_DATA
+context-graph uninstall cursor --dir <project>                   # Cursor, per project
+context-graph down                                               # stop the container
+uv tool uninstall context-graph                                  # remove the CLI (do this after `down`)
 docker rm context-graph-neo4j                                    # remove the container
 docker volume rm context-graph_neo4j-data                        # DELETES THE GRAPH. Export first (§11)
 rm -r ~/.context-graph                                           # password file

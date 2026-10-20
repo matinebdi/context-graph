@@ -3,18 +3,19 @@ name: context-graph
 description: How to use the context graph as long-term memory. Use it when starting work in a project, when the user shares durable information about themselves or their work, when they correct you or state a preference, when a decision is made, when you learn how a part of the project works, or before asking something the user may already have told you.
 ---
 
+<!-- Generated from src/context_graph/assets/agent-instructions.md; edit that file instead. -->
+
 # Using the context graph
 
 The `context-graph` MCP server is your long-term memory. It is a Neo4j graph shared across
-every project where this plugin is enabled. Treat it as the place where knowledge outlives the
-session.
+every project where it is enabled, and it is where knowledge outlives the session.
 
 ## Recall
 
-- The SessionStart hook injects an overview and the current project's node. If it is missing
-  or stale, call `graph_overview`.
-- Before asking the user something, `search_graph` for it. If a node looks relevant,
-  `get_node` it (use `depth=2` for its neighbourhood).
+- At the start of a task, use the overview your client injected at session start, if there is
+  one (Claude Code does this). Otherwise call `graph_overview` first.
+- Before asking the user something, `search_graph` for it. If a node looks relevant, `get_node`
+  it (use `depth=2` for its neighbourhood).
 - For structural questions, such as "which decisions affect X?" or "what is still open?", use
   `query_cypher`. Nodes are `(:Entity:<Type> {id, type, title, summary, body, status, tags})`.
   Project membership is `(n)-[:IN_PROJECT]->(:Project)`.
@@ -52,5 +53,7 @@ Rules:
 7. **Write quietly.** Recording is routine, so don't narrate every write. Mention it only when
    you store something the user might not expect.
 
-If a tool reports that the graph is offline, tell the user once that `/context-graph:setup`
-starts it, then carry on without it.
+If a tool reports that the graph is offline, tell the user once how to start it, then carry on
+without it:
+- in Claude Code: `/context-graph:setup`
+- anywhere else: `context-graph up` in a terminal

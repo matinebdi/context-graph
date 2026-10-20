@@ -8,7 +8,7 @@ allowed-tools: Bash
 Run the following command and report the result briefly:
 
 ```bash
-UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" context-graph status
+UV_PROJECT_ENVIRONMENT="${CLAUDE_PLUGIN_DATA}/venv" uv run --quiet --frozen --project "${CLAUDE_PLUGIN_ROOT}" python -m context_graph.cli status
 ```
 
 If it reports OFFLINE, suggest `/context-graph:setup`.
