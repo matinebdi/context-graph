@@ -6,7 +6,7 @@ from importlib import resources
 
 from context_graph.config import LocalCredentials, Settings
 from context_graph.domain import GraphError
-from context_graph.storage import Neo4jStore
+from context_graph.storage import GraphMaintenance, Neo4jStore
 
 
 class LocalDatabase:
@@ -55,6 +55,12 @@ class LocalDatabase:
                 print(".", end="", flush=True)
                 time.sleep(3)
         store.init_schema()
+        print("\nPreparing the embedding model for semantic search (downloads once, ~220 MB)…", flush=True)
+        try:
+            embedded = GraphMaintenance(store).reindex()
+            print(f"Semantic search ready; embedded {embedded} node(s).")
+        except GraphError as exc:
+            print(f"Semantic search unavailable ({exc}); keyword search still works.", file=sys.stderr)
         store.close()
         port = os.environ.get("CONTEXT_GRAPH_HTTP_PORT", "7475")
         print(f"\nNeo4j is up at {store.settings.uri}; schema ready.")

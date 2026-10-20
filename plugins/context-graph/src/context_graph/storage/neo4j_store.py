@@ -6,8 +6,10 @@ import re
 from neo4j import READ_ACCESS, GraphDatabase
 from neo4j.exceptions import AuthError, Neo4jError, ServiceUnavailable
 
-from context_graph.config import Settings
+from context_graph.config import Environment, Settings
 from context_graph.domain import Clock, GraphError, Node, PathKey, Relation, Schema
+from context_graph.semantic import Embedder
+from context_graph.storage.ranking import Ranking
 
 
 class Neo4jErrorTranslator:
@@ -41,15 +43,22 @@ class Neo4jErrorTranslator:
 class Neo4jStore:
     """Graph store backed by Neo4j.
 
-    Every node is ``(:Entity:<TypeLabel> {id, type, title, summary, body, status, tags, tags_text,
-    path, path_key, created, updated})``. Relations are real relationship types with an optional
-    ``note``. Project scoping uses ``(n)-[:IN_PROJECT]->(:Project)``.
+    Every node is ``(:Entity:<TypeLabel>)`` with the properties listed in ``PROPERTIES`` plus an
+    ``embedding`` vector for semantic search. Relations are real relationship types with an
+    optional ``note``. Project scoping uses ``(n)-[:IN_PROJECT]->(:Project)``.
 
     Attributes:
         settings: Connection settings; re-read on the next connection attempt while no password
             is configured, so a database started mid-session is picked up.
+        embedder: Computes the vectors for semantic search; search degrades to keywords only
+            when it is unavailable.
+        client: Name of the writing client, recorded as provenance.
     """
 
+    PROPERTIES = (
+        "id", "type", "title", "summary", "body", "status", "tags", "path",
+        "created", "updated", "created_by", "updated_by", "use_count", "last_used",
+    )
     SCHEMA = (
         "CREATE CONSTRAINT entity_id IF NOT EXISTS FOR (n:Entity) REQUIRE n.id IS UNIQUE",
         "CREATE INDEX entity_type IF NOT EXISTS FOR (n:Entity) ON (n.type)",
@@ -57,18 +66,26 @@ class Neo4jStore:
         "CREATE INDEX project_path IF NOT EXISTS FOR (n:Project) ON (n.path_key)",
         "CREATE FULLTEXT INDEX entity_text IF NOT EXISTS FOR (n:Entity) "
         "ON EACH [n.id, n.title, n.summary, n.body, n.tags_text]",
+        f"CREATE VECTOR INDEX entity_embedding IF NOT EXISTS FOR (n:Entity) ON n.embedding "
+        f"OPTIONS {{indexConfig: {{`vector.dimensions`: {Embedder.DIMENSIONS}, "
+        f"`vector.similarity_function`: 'cosine'}}}}",
     )
+    PROJECTION = "n {" + ", ".join(f".{p}" for p in PROPERTIES) + "}"
     # Appended to a MATCH binding `n`: one row per node with its properties, relations and projects.
-    NODE_RETURN = """
+    NODE_RETURN = f"""
     OPTIONAL MATCH (n)-[r]->(m:Entity) WHERE type(r) <> 'IN_PROJECT'
-    WITH n, collect(CASE WHEN m IS NULL THEN null ELSE {type: type(r), target: m.id, note: r.note} END) AS rels
+    WITH n, collect(CASE WHEN m IS NULL THEN null ELSE {{type: type(r), target: m.id, note: r.note}} END) AS rels
     OPTIONAL MATCH (n)-[:IN_PROJECT]->(p:Project)
-    RETURN n {.*} AS props, rels, collect(p.id) AS projects
+    RETURN {PROJECTION} AS props, rels, collect(p.id) AS projects
     """
     BRIEF = "{.id, .type, .title, .summary, .status, .updated}"
+    # Relationships that count towards a node's importance (project membership doesn't).
+    DEGREE = "COUNT { (n)-[r]-() WHERE type(r) <> 'IN_PROJECT' }"
 
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, embedder: Embedder | None = None):
         self.settings = settings or Settings.from_environment()
+        self.embedder = embedder or Embedder()
+        self.client = Environment.client()
         self._driver = None
 
     # ------------------------------------------------------------------ connection
@@ -117,14 +134,24 @@ class Neo4jStore:
     def init_schema(self) -> None:
         """Creates the constraints and indexes; safe to run repeatedly."""
         for statement in self.SCHEMA:
-            self._run(statement)
+            self.run(statement)
 
-    def _run(self, query: str, **params) -> list[dict]:
+    def run(self, query: str, **params) -> list[dict]:
+        """Runs one auto-committed query.
+
+        Args:
+            query: Cypher query.
+            **params: Query parameters.
+
+        Returns:
+            The rows as dicts.
+        """
         with Neo4jErrorTranslator(self.settings):
             records, _, _ = self.driver.execute_query(query, params, database_=self.settings.database)
         return [record.data() for record in records]
 
-    def _write(self, work, *args):
+    def write(self, work, *args):
+        """Runs ``work(tx, *args)`` in one managed write transaction and returns its result."""
         with Neo4jErrorTranslator(self.settings), self.driver.session(database=self.settings.database) as s:
             return s.execute_write(work, *args)
 
@@ -132,14 +159,14 @@ class Neo4jStore:
 
     def get(self, node_id: str) -> Node | None:
         """Returns the node with this id, or None."""
-        rows = self._run("MATCH (n:Entity {id: $id})" + self.NODE_RETURN, id=node_id)
+        rows = self.run("MATCH (n:Entity {id: $id})" + self.NODE_RETURN, id=node_id)
         return self._to_node(rows[0]) if rows else None
 
     def get_many(self, ids: list[str]) -> list[Node]:
         """Returns the existing nodes among ``ids``, in the order given."""
         if not ids:
             return []
-        rows = self._run("MATCH (n:Entity) WHERE n.id IN $ids" + self.NODE_RETURN, ids=ids)
+        rows = self.run("MATCH (n:Entity) WHERE n.id IN $ids" + self.NODE_RETURN, ids=ids)
         by_id = {row["props"]["id"]: self._to_node(row) for row in rows}
         return [by_id[i] for i in ids if i in by_id]
 
@@ -159,7 +186,8 @@ class Neo4jStore:
             status: Only nodes with this status; None for any.
             project: Only nodes in this project; None for the whole graph.
             include_global: With a project, also include nodes that belong to no project.
-            order: ``title`` (alphabetical) or ``updated`` (most recent first).
+            order: ``title`` (alphabetical), ``updated`` (most recent first) or ``importance``
+                (see ``Ranking.importance``).
             limit: Maximum number of nodes.
 
         Returns:
@@ -171,17 +199,36 @@ class Neo4jStore:
             if include_global:
                 scoped = f"({scoped} OR NOT EXISTS {{ (n)-[:IN_PROJECT]->() }})"
             where.append(scoped)
-        order_by = "n.updated DESC" if order == "updated" else "toLower(n.title)"
-        rows = self._run(
+        # Importance is scored in Python over a wider window of recent candidates.
+        fetch = min(max(limit * 5, 50), 500) if order == "importance" else limit
+        order_by = "toLower(n.title)" if order == "title" else "n.updated DESC"
+        rows = self.run(
             f"MATCH (n:Entity) WHERE {' AND '.join(where)} "
-            f"RETURN n {self.BRIEF} AS n ORDER BY {order_by} LIMIT $limit",
-            type=type, status=status, project=project, limit=limit,
+            f"RETURN n {self.BRIEF} AS n, {self.DEGREE} AS degree, coalesce(n.use_count, 0) AS uses "
+            f"ORDER BY {order_by} LIMIT $limit",
+            type=type, status=status, project=project, limit=fetch,
         )
-        return [row["n"] for row in rows]
+        if order == "importance":
+            now = dt.datetime.now(dt.timezone.utc)
+            rows.sort(key=lambda r: -Ranking.importance(r["degree"], r["uses"], r["n"]["updated"] or "", now))
+        return [row["n"] for row in rows[:limit]]
+
+    def count(self, type: str | None = None, status: str | None = "active", project: str | None = None,
+              include_global: bool = True) -> int:
+        """Counts the nodes ``find`` would list without a limit."""
+        where = ["($type IS NULL OR n.type = $type)", "($status IS NULL OR n.status = $status)"]
+        if project:
+            scoped = "EXISTS { (n)-[:IN_PROJECT]->(:Project {id: $project}) }"
+            if include_global:
+                scoped = f"({scoped} OR NOT EXISTS {{ (n)-[:IN_PROJECT]->() }})"
+            where.append(scoped)
+        rows = self.run(f"MATCH (n:Entity) WHERE {' AND '.join(where)} RETURN count(n) AS c",
+                        type=type, status=status, project=project)
+        return rows[0]["c"]
 
     def counts(self) -> dict[str, int]:
         """Returns the number of nodes per type."""
-        rows = self._run("MATCH (n:Entity) RETURN n.type AS type, count(*) AS c ORDER BY type")
+        rows = self.run("MATCH (n:Entity) RETURN n.type AS type, count(*) AS c ORDER BY type")
         return {row["type"]: row["c"] for row in rows}
 
     def neighbors(self, node_id: str) -> tuple[list[dict], list[dict]]:
@@ -195,47 +242,76 @@ class Neo4jStore:
             brief dict of the node at the other end.
         """
         tail = f"WHERE type(r) <> 'IN_PROJECT' RETURN type(r) AS rel, r.note AS note, m {self.BRIEF} AS other ORDER BY rel, other.id"
-        outgoing = self._run(f"MATCH (n:Entity {{id: $id}})-[r]->(m:Entity) {tail}", id=node_id)
-        incoming = self._run(f"MATCH (m:Entity)-[r]->(n:Entity {{id: $id}}) {tail}", id=node_id)
+        outgoing = self.run(f"MATCH (n:Entity {{id: $id}})-[r]->(m:Entity) {tail}", id=node_id)
+        incoming = self.run(f"MATCH (m:Entity)-[r]->(n:Entity {{id: $id}}) {tail}", id=node_id)
         return outgoing, incoming
 
     def search(
         self, query: str, type: str | None = None, project: str | None = None, limit: int = 10
     ) -> list[tuple[float, Node]]:
-        """Full-text search, boosting the given project and demoting inactive nodes.
+        """Hybrid search: keyword and semantic rankings fused with reciprocal rank fusion.
+
+        Nodes that belong only to other projects, and inactive nodes, are ranked a few places
+        lower (``Ranking.OTHER_PROJECT_PENALTY``, ``Ranking.INACTIVE_PENALTY``).
 
         Args:
-            query: Free text; Lucene operators are ignored.
+            query: Free text, in any language the embedding model knows; Lucene operators are
+                ignored.
             type: Only nodes of this type.
-            project: Project whose nodes rank 1.5x higher.
+            project: Current project; None ranks all projects alike.
             limit: Maximum number of results.
 
         Returns:
             ``(score, node)`` pairs, best first.
         """
-        lucene = self.lucene_query(query)
-        if not lucene:
+        window = max(limit * 3, 20)
+        keyword = self._keyword_ranking(query, type, window)
+        vector = self.embedder.embed_one(query) if query.strip() else None
+        semantic = [node_id for node_id, similarity in self._vector_ranking(vector, type, window)
+                    if similarity >= Ranking.SEMANTIC_FLOOR] if vector else []
+        candidates = list(dict.fromkeys(keyword + semantic))
+        if not candidates:
             return []
-        rows = self._run(
-            """
-            CALL db.index.fulltext.queryNodes('entity_text', $q) YIELD node, score
-            WHERE $type IS NULL OR node.type = $type
-            WITH node, score
-              * CASE WHEN $project IS NOT NULL
-                       AND EXISTS { (node)-[:IN_PROJECT]->(:Project {id: $project}) }
-                     THEN 1.5 ELSE 1.0 END
-              * CASE node.status WHEN 'active' THEN 1.0 ELSE 0.5 END AS s
-            RETURN node.id AS id, s ORDER BY s DESC, id LIMIT $limit
-            """,
-            q=lucene, type=type, project=project, limit=limit,
+        rows = self.run(
+            "MATCH (n:Entity) WHERE n.id IN $ids RETURN n.id AS id, n.status AS status, "
+            "EXISTS { (n)-[:IN_PROJECT]->() } AS scoped, "
+            "($project IS NOT NULL AND EXISTS { (n)-[:IN_PROJECT]->(:Project {id: $project}) }) AS here",
+            ids=candidates, project=project,
         )
-        scores = {row["id"]: row["s"] for row in rows}
-        return [(scores[n.id], n) for n in self.get_many([row["id"] for row in rows])]
+        penalties = {
+            row["id"]: (Ranking.OTHER_PROJECT_PENALTY if project and row["scoped"] and not row["here"] else 0)
+            + (Ranking.INACTIVE_PENALTY if row["status"] != "active" else 0)
+            for row in rows
+        }
+        fused = Ranking.fuse(keyword, semantic, penalties=penalties)
+        best = sorted(fused, key=lambda i: (-fused[i], i))[:limit]
+        return [(fused[n.id], n) for n in self.get_many(best)]
+
+    def similar(self, text: str, type: str | None = None, exclude: str | None = None,
+                threshold: float = 0.8, limit: int = 3) -> list[tuple[float, dict]]:
+        """Finds nodes whose meaning is close to ``text``, e.g. to warn about duplicates.
+
+        Args:
+            text: Text to compare, typically ``Embedder.text_for`` of a node.
+            type: Only nodes of this type.
+            exclude: Id to leave out (the node itself).
+            threshold: Minimum cosine similarity.
+            limit: Maximum number of matches.
+
+        Returns:
+            ``(similarity, brief dict)`` pairs, most similar first; empty without embeddings.
+        """
+        vector = self.embedder.embed_one(text)
+        if vector is None:
+            return []
+        matches = self._vector_ranking(vector, type, limit + 1, with_brief=True)
+        return [(score, brief) for _, score, brief in matches
+                if brief["id"] != exclude and score >= threshold][:limit]
 
     def projects_for_path(self, directory: str) -> list[Node]:
         """Returns the project nodes whose ``path`` contains ``directory``, most specific first."""
         here = PathKey.normalize(directory)
-        rows = self._run("MATCH (p:Project) WHERE p.path_key IS NOT NULL RETURN p.id AS id, p.path_key AS k")
+        rows = self.run("MATCH (p:Project) WHERE p.path_key IS NOT NULL RETURN p.id AS id, p.path_key AS k")
         hits = sorted(
             ((len(row["k"]), row["id"]) for row in rows
              if here == row["k"] or here.startswith(row["k"] + "/")),
@@ -260,7 +336,7 @@ class Neo4jStore:
         with Neo4jErrorTranslator(self.settings), self.driver.session(
             database=self.settings.database, default_access_mode=READ_ACCESS
         ) as session:
-            records = session.execute_read(self._fetch, query, params or {}, limit)
+            records = session.execute_read(self._fetch_tx, query, params or {}, limit)
         return [json.loads(json.dumps(record.data(), default=str)) for record in records]
 
     # ------------------------------------------------------------------ writes
@@ -280,6 +356,8 @@ class Neo4jStore:
         project: str | None = None,
     ) -> tuple[Node, bool]:
         """Creates a node or merges the given fields into it, atomically.
+
+        The embedding is recomputed whenever the title, summary, tags or body change.
 
         Args:
             node_id: Id of the node.
@@ -306,10 +384,12 @@ class Neo4jStore:
         if created:
             if not type:
                 raise GraphError(f"node {node_id!r} does not exist; `type` is required to create it")
-            node = Node(id=node_id, type=Schema.node_type(type), title=title or node_id, created=Clock.now())
-            old_type = None
+            node = Node(id=node_id, type=Schema.node_type(type), title=title or node_id,
+                        created=Clock.now(), created_by=self.client)
+            old_type, old_text = None, None
         else:
             node, old_type = existing, existing.type
+            old_text = self.text_of(existing)
             if type:
                 node.type = Schema.node_type(type)
             if title:
@@ -326,12 +406,14 @@ class Neo4jStore:
             node.path = path or None
         if status:
             node.status = Schema.status(status)
-        node.updated = Clock.now()
+        node.updated, node.updated_by = Clock.now(), self.client
 
+        text = self.text_of(node)
+        embedding = self.embedder.embed_one(text) if text != old_text else ...
         links = [(Schema.relationship(r.type), Schema.node_id(r.target), r.note) for r in relations or []]
         if project:
             Schema.node_id(project)
-        self._write(self._upsert_tx, node, old_type, links, project)
+        self.write(self._upsert_tx, node, old_type, embedding, links, project)
         return self.get(node_id), created
 
     def link(self, source: str, relation: str, target: str, note: str | None = None) -> bool:
@@ -343,7 +425,7 @@ class Neo4jStore:
         Raises:
             GraphError: If the relation name is invalid or a node is missing.
         """
-        result = self._write(self._link_tx, source, Schema.relationship(relation), target, note, True)
+        result = self.write(self._link_tx, source, Schema.relationship(relation), target, note, True)
         if result is None:
             missing = [i for i in (source, target) if self.get(i) is None]
             raise GraphError(f"node(s) do not exist: {missing}")
@@ -351,7 +433,7 @@ class Neo4jStore:
 
     def unlink(self, source: str, relation: str, target: str) -> bool:
         """Removes a relation. Returns whether one was removed."""
-        rows = self._run(
+        rows = self.run(
             f"MATCH (:Entity {{id: $a}})-[r:{Schema.relationship(relation)}]->(:Entity {{id: $b}}) "
             "DELETE r RETURN count(*) AS c",
             a=source, b=target,
@@ -361,10 +443,10 @@ class Neo4jStore:
     def set_project(self, node_id: str, project_id: str, remove: bool = False) -> None:
         """Attaches a node to a project, or detaches it with ``remove=True``."""
         if remove:
-            self._run("MATCH (:Entity {id: $n})-[r:IN_PROJECT]->(:Project {id: $p}) DELETE r",
-                      n=node_id, p=project_id)
+            self.run("MATCH (:Entity {id: $n})-[r:IN_PROJECT]->(:Project {id: $p}) DELETE r",
+                     n=node_id, p=project_id)
         else:
-            self._write(self._scope_tx, node_id, project_id)
+            self.write(self._scope_tx, node_id, project_id)
 
     def delete(self, node_id: str) -> int:
         """Deletes a node and all its relations.
@@ -375,7 +457,7 @@ class Neo4jStore:
         Raises:
             GraphError: If the node does not exist.
         """
-        rows = self._run(
+        rows = self.run(
             "MATCH (n:Entity {id: $id}) OPTIONAL MATCH (n)<-[r]-() "
             "WITH n, count(r) AS inc DETACH DELETE n RETURN inc",
             id=node_id,
@@ -383,6 +465,13 @@ class Neo4jStore:
         if not rows:
             raise GraphError(f"node {node_id!r} does not exist")
         return rows[0]["inc"]
+
+    def touch(self, ids: list[str]) -> None:
+        """Records that these nodes were used (returned by a search or read), for importance."""
+        if ids:
+            self.run("MATCH (n:Entity) WHERE n.id IN $ids "
+                     "SET n.use_count = coalesce(n.use_count, 0) + 1, n.last_used = $now",
+                     ids=ids, now=Clock.now())
 
     def ensure_project(self, directory: str) -> Node:
         """Returns the project node registered for ``directory``, creating one if needed.
@@ -400,15 +489,30 @@ class Neo4jStore:
         node, _ = self.upsert(project_id, type="project", title=name, path=directory)
         return node
 
+    def set_embeddings(self, vectors: dict[str, list[float] | None]) -> None:
+        """Stores precomputed embeddings, e.g. from a reindex.
+
+        Args:
+            vectors: Embedding (or None to clear it) per node id.
+        """
+        self.run(
+            "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
+            "SET n.embedding = row.vector, n.embedding_model = CASE WHEN row.vector IS NULL "
+            "THEN null ELSE $model END",
+            rows=[{"id": i, "vector": v} for i, v in vectors.items()], model=self.embedder.model_name,
+        )
+
     # ------------------------------------------------------------------ backup
 
     def export_all(self) -> list[dict]:
-        """Returns every node as an export dict, sorted by id."""
-        rows = self._run("MATCH (n:Entity)" + self.NODE_RETURN + " ORDER BY props.id")
+        """Returns every node as an export dict, sorted by id (embeddings are not exported)."""
+        rows = self.run("MATCH (n:Entity)" + self.NODE_RETURN + " ORDER BY props.id")
         return [self._to_node(row).to_dict() for row in rows]
 
     def import_nodes(self, nodes: list[Node]) -> int:
         """Loads nodes with their relations and projects in one transaction, keeping timestamps.
+
+        Embeddings are computed for the imported nodes when the embedder is available.
 
         Returns:
             The number of nodes loaded.
@@ -421,22 +525,23 @@ class Neo4jStore:
             node.type = Schema.node_type(node.type)
             node.created = node.created or Clock.now()
             node.updated = node.updated or node.created
-        self._write(self._import_tx, nodes)
+        vectors = self.embedder.embed([self.text_of(n) for n in nodes]) or [None] * len(nodes)
+        self.write(self._import_tx, nodes, vectors)
         return len(nodes)
 
     # ------------------------------------------------------------------ transaction functions
 
-    def _upsert_tx(self, tx, node: Node, old_type: str | None, links: list, project: str | None) -> None:
-        self._save_tx(tx, node, old_type)
+    def _upsert_tx(self, tx, node: Node, old_type: str | None, embedding, links: list, project: str | None) -> None:
+        self._save_tx(tx, node, old_type, embedding)
         missing = [target for rel, target, note in links if self._link_tx(tx, node.id, rel, target, note) is None]
         if missing:
             raise GraphError(f"relation targets do not exist: {missing}. Create them first.")
         if project:
             self._scope_tx(tx, node.id, project)
 
-    def _import_tx(self, tx, nodes: list[Node]) -> None:
-        for node in nodes:
-            self._save_tx(tx, node, None)
+    def _import_tx(self, tx, nodes: list[Node], vectors: list) -> None:
+        for node, vector in zip(nodes, vectors):
+            self._save_tx(tx, node, None, vector)
         for node in nodes:
             for relation in node.relations:
                 rel = Schema.relationship(relation.type)
@@ -445,8 +550,8 @@ class Neo4jStore:
             for project in node.projects:
                 self._scope_tx(tx, node.id, project)
 
-    @staticmethod
-    def _save_tx(tx, node: Node, old_type: str | None) -> None:
+    def _save_tx(self, tx, node: Node, old_type: str | None, embedding=...) -> None:
+        """Writes the node's properties; ``embedding=...`` keeps the stored vector unchanged."""
         label = Schema.label(node.type)
         remove = f"REMOVE n:{Schema.label(old_type)} " if old_type and old_type != node.type else ""
         props = {
@@ -454,7 +559,11 @@ class Neo4jStore:
             "status": node.status, "tags": node.tags, "tags_text": " ".join(node.tags),
             "path": node.path, "path_key": PathKey.normalize(node.path) if node.path else None,
             "created": node.created, "updated": node.updated,
+            "created_by": node.created_by or None, "updated_by": node.updated_by or None,
         }
+        if embedding is not ...:
+            props["embedding"] = embedding
+            props["embedding_model"] = self.embedder.model_name if embedding is not None else None
         tx.run(f"MERGE (n:Entity {{id: $id}}) SET n += $props {remove}SET n:{label}", id=node.id, props=props)
 
     @staticmethod
@@ -485,10 +594,43 @@ class Neo4jStore:
         )
 
     @staticmethod
-    def _fetch(tx, query: str, params: dict, limit: int) -> list:
+    def _fetch_tx(tx, query: str, params: dict, limit: int) -> list:
         return tx.run(query, params).fetch(limit)
 
     # ------------------------------------------------------------------ helpers
+
+    def _keyword_ranking(self, query: str, type: str | None, limit: int) -> list[str]:
+        lucene = self.lucene_query(query)
+        if not lucene:
+            return []
+        rows = self.run(
+            "CALL db.index.fulltext.queryNodes('entity_text', $q) YIELD node, score "
+            "WHERE $type IS NULL OR node.type = $type RETURN node.id AS id ORDER BY score DESC LIMIT $limit",
+            q=lucene, type=type, limit=limit,
+        )
+        return [row["id"] for row in rows]
+
+    def _vector_ranking(self, vector: list[float], type: str | None, limit: int,
+                        with_brief: bool = False) -> list[tuple]:
+        """Nearest neighbours of ``vector`` as ``(id, cosine similarity[, brief])``, best first.
+
+        Neo4j reports cosine scores normalized to ``(1 + cos) / 2``; they are converted back.
+        The type filter runs after the approximate search, hence the over-fetch.
+        """
+        rows = self.run(
+            "CALL db.index.vector.queryNodes('entity_embedding', $k, $vector) YIELD node AS n, score "
+            f"WHERE $type IS NULL OR n.type = $type RETURN n.id AS id, score, n {self.BRIEF} AS brief "
+            "ORDER BY score DESC LIMIT $limit",
+            k=limit * 4 if type else limit, vector=vector, type=type, limit=limit,
+        )
+        if with_brief:
+            return [(row["id"], 2 * row["score"] - 1, row["brief"]) for row in rows]
+        return [(row["id"], 2 * row["score"] - 1) for row in rows]
+
+    @staticmethod
+    def text_of(node: Node) -> str:
+        """Returns the text that represents ``node`` in the vector index."""
+        return Embedder.text_for(node.title, node.summary, node.tags, node.body)
 
     @staticmethod
     def _to_node(row: dict) -> Node:

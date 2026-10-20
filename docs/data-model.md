@@ -7,6 +7,7 @@
 - [Project scoping](#project-scoping)
 - [Schema](#schema)
 - [Search](#search)
+- [Duplicates and merging](#duplicates-and-merging)
 - [Overview](#overview)
 - [Querying with Cypher](#querying-with-cypher)
 
@@ -28,6 +29,9 @@ Every node has the label `:Entity` plus one type label, which is the PascalCase 
 | `path` | string | filesystem root (projects only) |
 | `path_key` | string | normalized `path`: forward slashes, case-folded on Windows, Git Bash `/c/…` mapped to `c:/…` |
 | `created`, `updated` | string | UTC, `YYYY-MM-DDTHH:MM:SSZ`, so they sort as text |
+| `created_by`, `updated_by` | string | the client that wrote the node: `claude-code`, `cursor` or `cli` |
+| `use_count`, `last_used` | int, string | how often and when search or `get_node` returned the node; used for importance |
+| `embedding`, `embedding_model` | list of 384 floats, string | the node's meaning vector for semantic search, and the model that produced it |
 
 Default types (any other snake_case type is accepted too):
 
@@ -91,32 +95,67 @@ CREATE INDEX entity_updated IF NOT EXISTS FOR (n:Entity)  ON (n.updated);
 CREATE INDEX project_path   IF NOT EXISTS FOR (n:Project) ON (n.path_key);
 CREATE FULLTEXT INDEX entity_text IF NOT EXISTS
   FOR (n:Entity) ON EACH [n.id, n.title, n.summary, n.body, n.tags_text];
+CREATE VECTOR INDEX entity_embedding IF NOT EXISTS FOR (n:Entity) ON n.embedding
+  OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine'}};
 ```
 
 ## Search
 
-`search_graph` works in four steps:
+`search_graph` is hybrid: it combines a keyword ranking and a meaning ranking.
 
-1. **Words.** The input is split into words and lower-cased. That drops every Lucene operator
-   and special character. Each word `w` becomes `w OR w*`, matching it exactly or as a prefix:
-   `"rotate jwt"` becomes `rotate OR rotate* OR jwt OR jwt*`.
-2. **Index.** The full-text index `entity_text` is queried, covering id, title, summary, body and
-   tags.
-3. **Ranking.** A node's score is multiplied by `1.5` if it belongs to the current project, and by
-   `0.5` if its status isn't `active`.
-4. **Result.** Results are optionally filtered by type, sorted by score, and cut to `limit`.
+1. **Keyword ranking.** The query is split into words, which drops every Lucene operator. Each
+   word `w` becomes `w OR w*`, so `"rotate jwt"` becomes `rotate OR rotate* OR jwt OR jwt*`. That
+   query runs against the full-text index `entity_text` (id, title, summary, body, tags).
+2. **Meaning ranking.** The query is embedded with the same local model as the nodes, and the
+   vector index returns the nearest nodes. Matches below a cosine similarity of `0.3` are dropped.
+3. **Fusion.** The two rankings are merged with *reciprocal rank fusion*: each list adds
+   `1 / (60 + rank)` to a node's score. A node found by both rankings wins, and the two score
+   scales never need calibrating.
+4. **Scope.** Nodes that belong only to *other* projects are ranked as if found 5 places lower,
+   and inactive nodes 10 places lower. Nodes of the current project and global nodes (people,
+   preferences, tools) aren't penalized.
+
+**The model.** `paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, Apache-2.0), run locally
+with [fastembed](https://github.com/qdrant/fastembed) (ONNX). It understands about 50 languages
+and matches across them: *"mot de passe de la base"* finds a note about *"Neo4j password"*. A
+node's vector is computed from its title, summary, tags and the first 1,500 characters of its
+body, and recomputed whenever they change. If the model can't load, search silently falls back
+to keywords only.
+
+## Duplicates and merging
+
+- **On create.** When a new node's meaning is very close to an existing node of the same type
+  (cosine ≥ 0.8), `upsert_node` names the similar nodes in its reply.
+- **Merging.** `merge_nodes(keep, remove)` moves the removed node's relations (both directions)
+  and project links onto `keep`, unites the tags, appends its summary and body to `keep`, then
+  deletes it.
+- **Review.** `review_graph` / `context-graph review` reports:
+  - likely duplicates (same type, cosine ≥ 0.85)
+  - orphans (nodes without any relation)
+  - stale tasks (active, not updated for 30 days)
+  - superseded nodes that active nodes still depend on
+  - nodes missing an embedding
 
 ## Overview
 
-This is what the session-start hook injects and what `graph_overview` returns:
+This is what the session-start hook injects and what `graph_overview` returns. Sections are
+filled in this order, each with its most **important** nodes first, until the overview reaches
+**6,000 characters** (about 1,500 tokens). Each section then says how many nodes it left out,
+and a node appears in one section at most.
 
-| Section | Contents |
-|---|---|
-| People, Preferences | active nodes that are global or in the current project; up to 25 each |
-| Projects | active projects, most recently updated first; up to 10 |
-| Open tasks / Decisions in *project* | active nodes in the current project; up to 15 each |
-| Recent sessions in *project* | the last 3 sessions |
-| Recently updated | the last 8 nodes in the whole graph |
+| Section | Contents | Max |
+|---|---|---|
+| Preferences | active, global or in the current project | 25 |
+| People | active, global or in the current project | 10 |
+| Open tasks in *project* | active tasks of the current project | 15 |
+| Decisions in *project* | active decisions of the current project | 15 |
+| Recent sessions in *project* | the latest sessions, by date | 3 |
+| Projects | active projects | 10 |
+| Recently updated | the latest changes graph-wide, by date | 8 |
+
+**Importance** = `ln(1 + relationships) + ln(1 + uses) + 2 × 0.5^(age in days / 30)`. A
+well-connected node that agents keep reading ranks high even when it's old, and a fresh node
+gets a head start that halves every 30 days.
 
 ## Querying with Cypher
 

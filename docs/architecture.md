@@ -6,6 +6,7 @@
 - [Packages](#packages)
 - [Design choices](#design-choices)
 - [Session start (hook)](#session-start-hook)
+- [End of work (stop hook)](#end-of-work-stop-hook)
 - [MCP server](#mcp-server)
 - [Usage rules: skills and Cursor rule](#usage-rules-skills-and-cursor-rule)
 
@@ -49,10 +50,11 @@ This repository is three things at once:
 |---|---|---|
 | `domain/` | `Node`, `Relation`, `Schema`, `Clock`, `PathKey`, `GraphError` | entities; validation of ids, types and statuses; Cypher-safe labels and relationship types; path normalization; legacy markdown parser |
 | `config/` | `Environment`, `LocalCredentials`, `Settings` | env and userConfig (ignoring unresolved `${…}` placeholders); the local password; the project directory |
-| `storage/` | `Neo4jStore`, `Neo4jErrorTranslator` | all Cypher: schema, CRUD, scoping, full-text search, read-only queries, export/import |
+| `semantic/` | `Embedder` | local multilingual embeddings (fastembed / ONNX); lazy, and degrades to "unavailable" instead of failing |
+| `storage/` | `Neo4jStore`, `GraphMaintenance`, `Ranking`, `Neo4jErrorTranslator` | all Cypher: schema, CRUD, scoping, hybrid search, read-only queries, export/import; merge, review, reindex; rank fusion and importance |
 | `rendering/` | `MarkdownRenderer` | markdown views (node page, overview, project context) shared by the server and the hooks |
-| `server/` | `ContextGraphServer` | the MCP server: 11 tool methods registered with `add_tool` |
-| `cli/` | `ContextGraphCLI`, `SessionStartHook`, `LocalDatabase` | the `context-graph` command, the session-start hook, Docker Compose management |
+| `server/` | `ContextGraphServer` | the MCP server: 13 tool methods registered with `add_tool` |
+| `cli/` | `ContextGraphCLI`, `SessionStartHook`, `StopHook`, `TranscriptActivity`, `LocalDatabase` | the `context-graph` command, the client hooks, Docker Compose management |
 | `integrations/` | `ClientIntegration`, `CursorIntegration`, `ClaudeCodeIntegration`, `JsonConfig`, `PythonRuntime` | per-client installers |
 | `assets/` | — | `agent-instructions.md` (usage policy) and `compose.yml` (local Neo4j) |
 
@@ -106,6 +108,28 @@ A hook run goes through these steps:
 4. It prints the overview, then the current project's page, then a short usage reminder.
 5. On any `GraphError`, it prints `[context-graph] The context graph is offline (…)` and exits `0`.
 
+## End of work (stop hook)
+
+When the agent finishes a turn, `python -m context_graph.cli hook stop` decides whether to remind
+it to record what it learned. It never touches the database.
+
+1. It reads the session transcript and lists the tool calls in order (`TranscriptActivity`). A
+   call to `upsert_node`, `link`, `log_session`, `merge_nodes` or `set_node_project` counts as a
+   graph write.
+2. It nudges only if **15 or more tool calls** happened since the last graph write.
+3. It nudges **once per stretch of unrecorded work**. It remembers, per session in
+   `~/.context-graph/sessions/`, where it last nudged, and stays quiet until the agent writes to
+   the graph again. These state files are cleaned up after 14 days.
+4. It never fires while the client is already continuing because of a stop hook
+   (`stop_hook_active` in Claude Code; `loop_count > 0` or a status other than `completed` in
+   Cursor).
+
+| | Claude Code | Cursor |
+|---|---|---|
+| Registered in | plugin `hooks/hooks.json`, event `Stop`, timeout 30 s | project `.cursor/hooks.json`, event `stop` |
+| Nudge output | `{"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": "…"}}`, shown as "Stop hook feedback" | `{"followup_message": "…"}`, submitted as the next message |
+| Transcript format | `{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": …}]}}`, verified | read best-effort (`tool_use` items or OpenAI-style `tool_calls`), unverified; an unreadable transcript never triggers a nudge |
+
 ## MCP server
 
 The Claude Code plugin's `.mcp.json` starts the server over stdio. The Cursor entry is described
@@ -121,7 +145,8 @@ in [Installation → Cursor](installation.md#cursor).
     "CONTEXT_GRAPH_NEO4J_URI": "${user_config.neo4j_uri}",
     "CONTEXT_GRAPH_NEO4J_USER": "${user_config.neo4j_user}",
     "CONTEXT_GRAPH_NEO4J_PASSWORD": "${user_config.neo4j_password}",
-    "CONTEXT_GRAPH_NEO4J_DATABASE": "${user_config.neo4j_database}"
+    "CONTEXT_GRAPH_NEO4J_DATABASE": "${user_config.neo4j_database}",
+    "CONTEXT_GRAPH_CLIENT": "claude-code"
   }
 }
 ```

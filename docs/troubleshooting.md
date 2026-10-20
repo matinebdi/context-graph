@@ -3,6 +3,7 @@
 [← README](../README.md)
 
 - [Session start messages](#session-start-messages)
+- [Semantic search and reminders](#semantic-search-and-reminders)
 - [Database](#database)
 - [Neo4j Browser](#neo4j-browser)
 - [Claude Code](#claude-code)
@@ -18,6 +19,14 @@
 | `… Docker is not installed` | the local database is configured, but there is no `docker` command | install Docker Desktop and run setup, **or** use an [external Neo4j](installation.md#external-neo4j-no-docker) |
 | `[context-graph] The context graph is offline (…)` | Docker or the container isn't running, or setup never ran | `/context-graph:setup` or `context-graph up` (or `docker start context-graph-neo4j`) |
 | tools say `no Neo4j password configured` | setup never ran on this machine | run setup; the next tool call reconnects by itself |
+
+## Semantic search and reminders
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `[context-graph] semantic search disabled: …` in logs; search only matches keywords | the embedding model couldn't load (no network on first use, unsupported platform) or `CONTEXT_GRAPH_EMBEDDINGS=off` | fix the cause, then run `context-graph reindex` |
+| `review` reports nodes without an embedding | they were written while the model was unavailable | `context-graph reindex` |
+| the agent gets an end-of-work reminder you don't want | it fires after 15+ tool calls without a graph write, once per stretch | remove the `Stop` hook (Claude Code plugin `hooks/hooks.json`) or the `stop` entry in `.cursor/hooks.json` |
 
 ## Database
 

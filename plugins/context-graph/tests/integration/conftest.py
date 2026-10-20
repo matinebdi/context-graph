@@ -1,3 +1,5 @@
+import hashlib
+import math
 import os
 import shutil
 import subprocess
@@ -7,6 +9,7 @@ import pytest
 
 from context_graph.config import Settings
 from context_graph.domain import GraphError
+from context_graph.semantic import Embedder
 from context_graph.storage import Neo4jStore
 
 
@@ -45,7 +48,7 @@ class ThrowawayNeo4j:
                  "-e", f"NEO4J_AUTH=neo4j/{self.PASSWORD}", self.IMAGE],
                 check=True, capture_output=True,
             )
-        store = Neo4jStore(self.settings)
+        store = Neo4jStore(self.settings, TrigramEmbedder())
         deadline = time.time() + timeout
         while True:
             try:
@@ -64,6 +67,34 @@ class ThrowawayNeo4j:
             subprocess.run(["docker", "rm", "-f", self.CONTAINER], capture_output=True)
 
 
+class TrigramEmbedder(Embedder):
+    """Deterministic stand-in for the real model: hashed character trigrams, no download.
+
+    Texts sharing word fragments get close vectors, so "authentication" finds "auth tokens"
+    through the vector index even though the keyword index can't.
+    """
+
+    def __init__(self):
+        super().__init__(model_name="test-trigrams")
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        vectors = []
+        for text in texts:
+            vector = [0.0] * self.DIMENSIONS
+            for word in text.lower().split():
+                padded = f" {word} "
+                for i in range(len(padded) - 2):
+                    bucket = int(hashlib.md5(padded[i:i + 3].encode()).hexdigest(), 16) % self.DIMENSIONS
+                    vector[bucket] += 1.0
+            norm = math.sqrt(sum(x * x for x in vector)) or 1.0
+            vectors.append([x / norm for x in vector])
+        return vectors
+
+
 @pytest.fixture(scope="session")
 def neo4j():
     database = ThrowawayNeo4j()
@@ -76,7 +107,7 @@ def neo4j():
 
 @pytest.fixture
 def store(neo4j):
-    graph = Neo4jStore(neo4j.settings)
-    graph._run("MATCH (n) DETACH DELETE n")
+    graph = Neo4jStore(neo4j.settings, TrigramEmbedder())
+    graph.run("MATCH (n) DETACH DELETE n")
     yield graph
     graph.close()

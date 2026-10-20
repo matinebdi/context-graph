@@ -45,6 +45,8 @@ class Node:
         projects: Ids of the projects the node belongs to; empty means global.
         created: UTC creation timestamp.
         updated: UTC last-update timestamp.
+        created_by: Client that created the node, e.g. ``claude-code``, ``cursor``, ``cli``.
+        updated_by: Client that last updated the node.
     """
 
     id: str
@@ -59,6 +61,8 @@ class Node:
     projects: list[str] = field(default_factory=list)
     created: str = ""
     updated: str = ""
+    created_by: str = ""
+    updated_by: str = ""
 
     def to_dict(self) -> dict:
         """Returns the node as a JSON-serializable dict (the export format)."""
@@ -67,6 +71,7 @@ class Node:
             "body": self.body, "status": self.status, "path": self.path, "tags": self.tags,
             "relations": [r.to_dict() for r in self.relations], "projects": self.projects,
             "created": self.created, "updated": self.updated,
+            "created_by": self.created_by, "updated_by": self.updated_by,
         }
 
     @classmethod
@@ -96,6 +101,8 @@ class Node:
             projects=[str(p) for p in data.get("projects") or []],
             created=str(data.get("created") or ""),
             updated=str(data.get("updated") or ""),
+            created_by=str(data.get("created_by") or ""),
+            updated_by=str(data.get("updated_by") or ""),
         )
 
     @classmethod

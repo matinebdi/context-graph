@@ -29,6 +29,15 @@ class Environment:
         return default
 
     @classmethod
+    def client(cls) -> str:
+        """Returns the name of the client writing to the graph, recorded as provenance.
+
+        Client configs set ``CONTEXT_GRAPH_CLIENT`` (``claude-code``, ``cursor``); anything else,
+        such as the CLI, is ``cli``.
+        """
+        return cls.get("CONTEXT_GRAPH_CLIENT", default="cli")
+
+    @classmethod
     def project_dir(cls) -> str:
         """Returns the directory of the project the session works on.
 

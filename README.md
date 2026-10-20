@@ -15,6 +15,10 @@ you like to work, what was decided and why, how the project fits together, and w
   graph.
 - **Scoped per project, personal everywhere.** Decisions and tasks stay with their project, while
   your preferences follow you into every project.
+- **Finds things by meaning, in any language.** Search is hybrid (keywords + local embeddings),
+  so a French question finds an English note. Nothing leaves your machine.
+- **Doesn't let knowledge slip away.** After substantial work, the agent is reminded once to
+  record what it learned. It is also warned about duplicates, and can review and tidy the graph.
 - **A real graph.** You can browse it in Neo4j Browser and query it with Cypher.
 - **Local and private by default.** Neo4j runs in Docker, reachable only from `127.0.0.1`.
 
@@ -27,12 +31,14 @@ flowchart LR
     S <-- Bolt --> N[("Neo4j<br/>(Docker)")]
 ```
 
-1. When a session starts, a hook loads an overview of the graph and the current project into
-   the agent's context.
+1. When a session starts, a hook loads a compact overview into the agent's context: your
+   preferences, plus the current project's open tasks and key decisions, ranked by importance.
 2. While the agent works, it calls MCP tools to search the graph, read nodes, and record
    decisions, preferences, concepts and tasks.
 3. A rule (a Claude skill, or a Cursor rule) tells the agent when to recall and what is worth
    recording.
+4. When a turn ends after substantial unrecorded work, a hook reminds the agent once to save
+   what it learned.
 
 ## Quick start
 
@@ -97,6 +103,7 @@ it:
 | Store something explicitly | `/context-graph:remember <text>` | ask the agent to remember it |
 | Check the connection | `/context-graph:status` | `context-graph status` |
 | Search the graph | ask the agent | `context-graph search "<words>"` |
+| Tidy up (duplicates, orphans, stale tasks) | ask the agent to review the graph | `context-graph review` |
 | Back up the graph | | `context-graph export backup.json` |
 
 ## Documentation

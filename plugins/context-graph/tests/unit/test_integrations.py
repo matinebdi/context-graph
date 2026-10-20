@@ -32,11 +32,14 @@ class TestCursorIntegration:
         servers = read(cursor / "mcp.json")["mcpServers"]
         assert set(servers) == {"other", "context-graph"}
         assert servers["context-graph"]["args"] == ["-m", "context_graph.server"]
-        assert servers["context-graph"]["env"] == {"CONTEXT_GRAPH_PROJECT_DIR": "${workspaceFolder}"}
+        assert servers["context-graph"]["env"] == {"CONTEXT_GRAPH_PROJECT_DIR": "${workspaceFolder}",
+                                                   "CONTEXT_GRAPH_CLIENT": "cursor"}
         starts = read(cursor / "hooks.json")["hooks"]["sessionStart"]
         assert starts[0] == {"command": "echo hi"} and len(starts) == 2
         # forward slashes and quotes (the path has a space) so any shell can run it
         assert starts[1]["command"] == '"C:/Program Files/cg/python.exe" -m context_graph.cli hook session-start --format cursor'
+        stops = read(cursor / "hooks.json")["hooks"]["stop"]
+        assert stops == [{"command": '"C:/Program Files/cg/python.exe" -m context_graph.cli hook stop --format cursor'}]
         rule = (cursor / "rules" / "context-graph.mdc").read_text(encoding="utf-8")
         assert rule.startswith("---\n") and "alwaysApply: true" in rule and "search_graph" in rule
 
@@ -48,7 +51,7 @@ class TestCursorIntegration:
         integration.install()
         assert len(integration.uninstall()) == 3
         assert read(cursor / "mcp.json")["mcpServers"] == {}
-        assert read(cursor / "hooks.json")["hooks"]["sessionStart"] == [{"command": "echo hi"}]
+        assert read(cursor / "hooks.json")["hooks"] == {"sessionStart": [{"command": "echo hi"}]}
         assert not (cursor / "rules" / "context-graph.mdc").exists()
         assert integration.uninstall() == []
 

@@ -94,6 +94,6 @@ context-graph down                                    # stop the database
 uv tool uninstall context-graph                       # remove the CLI (after `down`)
 docker rm context-graph-neo4j                         # remove the container
 docker volume rm context-graph_neo4j-data             # DELETES THE GRAPH: export it first
-rm -r ~/.context-graph                                # the password file
+rm -r ~/.context-graph                                # password, embedding model, hook state
 claude plugin marketplace remove context-graph
 ```

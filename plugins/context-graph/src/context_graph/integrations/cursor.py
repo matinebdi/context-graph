@@ -4,7 +4,7 @@ from context_graph.integrations.base import ClientIntegration, JsonConfig, Pytho
 
 
 class CursorIntegration(ClientIntegration):
-    """Cursor: MCP server, ``sessionStart`` hook and an always-on rule in the project's ``.cursor/``.
+    """Cursor: MCP server, ``sessionStart`` and ``stop`` hooks, and an always-on rule in ``.cursor/``.
 
     Attributes:
         mcp_config: ``.cursor/mcp.json``.
@@ -14,7 +14,9 @@ class CursorIntegration(ClientIntegration):
 
     NAME = "cursor"
     SERVER = "context-graph"
-    HOOK_MARKER = "context_graph.cli hook session-start"
+    HOOK_MARKER = "context_graph.cli hook "
+    # Cursor hook event -> our hook event.
+    HOOK_EVENTS = {"sessionStart": "session-start", "stop": "stop"}
     RULE_HEADER = (
         "---\n"
         "description: Long-term memory via the context-graph MCP server (Neo4j knowledge graph)\n"
@@ -38,15 +40,18 @@ class CursorIntegration(ClientIntegration):
             "type": "stdio",
             "command": python,
             "args": ["-m", "context_graph.server"],
-            "env": {"CONTEXT_GRAPH_PROJECT_DIR": "${workspaceFolder}"},
+            "env": {"CONTEXT_GRAPH_PROJECT_DIR": "${workspaceFolder}", "CONTEXT_GRAPH_CLIENT": "cursor"},
         }
         self.mcp_config.save(mcp)
 
         hooks = self.hooks_config.load({"version": 1, "hooks": {}})
         hooks.setdefault("version", 1)
-        starts = [h for h in hooks.setdefault("hooks", {}).get("sessionStart", []) if not self._is_ours(h)]
-        starts.append({"command": f"{PythonRuntime.shell_path(python)} -m {self.HOOK_MARKER} --format cursor"})
-        hooks["hooks"]["sessionStart"] = starts
+        events = hooks.setdefault("hooks", {})
+        for cursor_event, our_event in self.HOOK_EVENTS.items():
+            entries = [h for h in events.get(cursor_event, []) if not self._is_ours(h)]
+            command = f"{PythonRuntime.shell_path(python)} -m {self.HOOK_MARKER}{our_event} --format cursor"
+            entries.append({"command": command})
+            events[cursor_event] = entries
         self.hooks_config.save(hooks)
 
         self.rule_file.parent.mkdir(parents=True, exist_ok=True)
@@ -63,16 +68,22 @@ class CursorIntegration(ClientIntegration):
             changed.append(self.mcp_config.path)
 
         hooks = self.hooks_config.load({})
-        starts = hooks.get("hooks", {}).get("sessionStart")
-        if starts is not None:
-            kept = [h for h in starts if not self._is_ours(h)]
-            if len(kept) != len(starts):
+        events = hooks.get("hooks", {})
+        removed = False
+        for cursor_event in self.HOOK_EVENTS:
+            entries = events.get(cursor_event)
+            if entries is None:
+                continue
+            kept = [h for h in entries if not self._is_ours(h)]
+            if len(kept) != len(entries):
+                removed = True
                 if kept:
-                    hooks["hooks"]["sessionStart"] = kept
+                    events[cursor_event] = kept
                 else:
-                    del hooks["hooks"]["sessionStart"]
-                self.hooks_config.save(hooks)
-                changed.append(self.hooks_config.path)
+                    del events[cursor_event]
+        if removed:
+            self.hooks_config.save(hooks)
+            changed.append(self.hooks_config.path)
 
         if self.rule_file.exists():
             self.rule_file.unlink()

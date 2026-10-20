@@ -9,6 +9,11 @@ class MarkdownRenderer:
         store: Store the views are read from.
     """
 
+    # Maximum length of the session-start overview, in characters (~1,500 tokens).
+    OVERVIEW_BUDGET = 6000
+    # Room kept for a section's "…and N more" line.
+    MORE_LINE_RESERVE = 60
+
     def __init__(self, store: Neo4jStore):
         self.store = store
 
@@ -48,6 +53,8 @@ class MarkdownRenderer:
         if node.tags:
             meta.append("tags: " + ", ".join(node.tags))
         meta.append("projects: " + (", ".join(node.projects) if node.projects else "global"))
+        if node.created_by or node.updated_by:
+            meta.append(f"by: {node.created_by or '?'}" + (f" → {node.updated_by}" if node.updated_by != node.created_by else ""))
         out.append(" | ".join(meta))
         if node.summary:
             out.append(f"\n{node.summary}")
@@ -82,12 +89,16 @@ class MarkdownRenderer:
                 out.extend(second[:40])
         return "\n".join(out)
 
-    def overview(self, project: str | None = None, recent: int = 8) -> str:
+    def overview(self, project: str | None = None, budget: int | None = None) -> str:
         """Renders the graph overview injected at session start.
+
+        Sections are filled in priority order with their most important nodes first (see
+        ``Ranking.importance``) until ``budget`` characters are used; each section then says how
+        many nodes it left out. A node appears in one section at most.
 
         Args:
             project: Current project; adds its open tasks, decisions and recent sessions.
-            recent: Number of recently updated nodes to list.
+            budget: Maximum length in characters; defaults to ``OVERVIEW_BUDGET``.
 
         Returns:
             The overview.
@@ -95,43 +106,59 @@ class MarkdownRenderer:
         counts = self.store.counts()
         if not counts:
             return "The context graph is empty."
+        budget = budget or self.OVERVIEW_BUDGET
         total = sum(counts.values())
         out = [f"# Context graph: {total} nodes (" + ", ".join(f"{t} {c}" for t, c in counts.items()) + ")"]
-        find = self.store.find
+        used, shown = len(out[0]), set()
+        for heading, query, limit in self._overview_sections(project):
+            items = [n for n in self.store.find(**query, limit=limit) if n["id"] not in shown]
+            if not items:
+                continue
+            lines = [f"\n## {heading}"]
+            for item in items:
+                line = self.brief(item)
+                if used + sum(len(x) + 1 for x in lines) + len(line) + 1 > budget - self.MORE_LINE_RESERVE:
+                    break
+                lines.append(line)
+                shown.add(item["id"])
+            if len(lines) == 1:
+                continue
+            listed = len(lines) - 1
+            if heading != "Recently updated":
+                filters = {k: v for k, v in query.items() if k != "order"}
+                hidden = self.store.count(**filters) - listed
+                if hidden > 0:
+                    lines.append(f"- …and {hidden} more (search_graph to find them)")
+            out.extend(lines)
+            used += sum(len(x) + 1 for x in lines)
+        return "\n".join(out)
+
+    @staticmethod
+    def _overview_sections(project: str | None) -> list[tuple[str, dict, int]]:
+        """Overview sections in priority order: ``(heading, find() filters, max items)``."""
         sections = [
-            ("People", find(type="person", project=project, limit=26), 25),
-            ("Preferences (follow these)", find(type="preference", project=project, limit=26), 25),
-            ("Projects", find(type="project", order="updated", limit=11), 10),
+            ("Preferences (follow these)", {"type": "preference", "project": project, "order": "importance"}, 25),
+            ("People", {"type": "person", "project": project, "order": "importance"}, 10),
         ]
         if project:
+            scoped = {"project": project, "include_global": False}
             sections += [
-                (f"Open tasks in {project}",
-                 find(type="task", project=project, include_global=False, order="updated", limit=16), 15),
-                (f"Decisions in {project}",
-                 find(type="decision", project=project, include_global=False, order="updated", limit=16), 15),
-                (f"Recent sessions in {project}",
-                 find(type="session", project=project, include_global=False, status=None,
-                      order="updated", limit=3), 3),
+                (f"Open tasks in {project}", {"type": "task", **scoped, "order": "importance"}, 15),
+                (f"Decisions in {project}", {"type": "decision", **scoped, "order": "importance"}, 15),
+                (f"Recent sessions in {project}", {"type": "session", **scoped, "status": None, "order": "updated"}, 3),
             ]
         else:
-            sections.append(("Open tasks", find(type="task", order="updated", limit=16), 15))
-        sections.append(("Recently updated", find(status=None, order="updated", limit=recent), recent))
-        for heading, items, limit in sections:
-            out.extend(self._section(heading, items, limit))
-        return "\n".join(out)
+            sections.append(("Open tasks", {"type": "task", "order": "importance"}, 15))
+        sections += [
+            ("Projects", {"type": "project", "order": "importance"}, 10),
+            ("Recently updated", {"status": None, "order": "updated"}, 8),
+        ]
+        return sections
 
     def project_context(self, directory: str) -> str:
         """Renders the project node(s) containing ``directory``; empty if there is none."""
         projects = self.store.projects_for_path(directory)
         return "\n\n".join(self.node(p.id) for p in projects[:2])
-
-    def _section(self, heading: str, items: list[dict], limit: int) -> list[str]:
-        if not items:
-            return []
-        lines = [f"\n## {heading}", *(self.brief(n) for n in items[:limit])]
-        if len(items) > limit:
-            lines.append("- …and more (search_graph to find them)")
-        return lines
 
     def _second_degree(self, node_id: str, relations: list[dict]) -> list[str]:
         seen = {node_id}

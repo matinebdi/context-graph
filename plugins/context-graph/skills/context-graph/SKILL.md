@@ -14,8 +14,9 @@ every project where it is enabled, and it is where knowledge outlives the sessio
 
 - At the start of a task, use the overview your client injected at session start, if there is
   one (Claude Code does this). Otherwise call `graph_overview` first.
-- Before asking the user something, `search_graph` for it. If a node looks relevant, `get_node`
-  it (use `depth=2` for its neighbourhood).
+- Before asking the user something, `search_graph` for it. Search understands meaning and works
+  across languages, so describe what you need in plain words. If a node looks relevant,
+  `get_node` it (use `depth=2` for its neighbourhood).
 - For structural questions, such as "which decisions affect X?" or "what is still open?", use
   `query_cypher`. Nodes are `(:Entity:<Type> {id, type, title, summary, body, status, tags})`.
   Project membership is `(n)-[:IN_PROJECT]->(:Project)`.
@@ -37,7 +38,8 @@ Rules:
 
 1. **Search before creating.** Update an existing node instead of making a near-duplicate.
    Ids are stable lowercase-dash slugs with a type prefix where it helps, such as
-   `decision-use-postgres` or `pref-small-commits`.
+   `decision-use-postgres` or `pref-small-commits`. If `upsert_node` reports similar existing
+   nodes, update one of them or fold the duplicate in with `merge_nodes`.
 2. **Keep `summary` to one line.** Details go in `body`. Use `append_body` to add dated notes
    without rewriting.
 3. **Link generously but meaningfully.** A node with no relations is hard to find later.
@@ -52,6 +54,12 @@ Rules:
    share.
 7. **Write quietly.** Recording is routine, so don't narrate every write. Mention it only when
    you store something the user might not expect.
+8. **Tidy up occasionally.** When the user asks, or the graph feels cluttered, run
+   `review_graph` and fix what it finds: merge duplicates, link or archive orphans, close stale
+   tasks.
+
+After substantial work, the client may remind you once to record what you learned. Follow it:
+record what is worth keeping and call `log_session`, or say in one sentence that nothing is.
 
 If a tool reports that the graph is offline, tell the user once how to start it, then carry on
 without it:

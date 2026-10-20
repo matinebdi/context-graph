@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from context_graph.config import Environment
 from context_graph.domain import Relation, Schema
 from context_graph.rendering import MarkdownRenderer
-from context_graph.storage import Neo4jStore
+from context_graph.storage import GraphMaintenance, Neo4jStore
 
 
 class RelationInput(BaseModel):
@@ -36,12 +36,13 @@ class ContextGraphServer:
     def __init__(self, store: Neo4jStore | None = None):
         self.store = store or Neo4jStore()
         self.renderer = MarkdownRenderer(self.store)
+        self.maintenance = GraphMaintenance(self.store)
         self.mcp = MCPServer(self.NAME, instructions=self.instructions())
         self._projects: dict[str, str] = {}
         for tool in (
             self.graph_overview, self.search_graph, self.get_node, self.context_for_directory,
             self.upsert_node, self.link, self.unlink, self.set_node_project, self.delete_node,
-            self.log_session, self.query_cypher,
+            self.merge_nodes, self.log_session, self.review_graph, self.query_cypher,
         ):
             self.mcp.add_tool(tool)
 
@@ -55,13 +56,15 @@ It is your long-term memory of the user and their work.
 
 Read: call graph_overview when starting substantial work (a session-start hook may already
 have injected it). Before asking the user something they may have told you before, use
-search_graph / get_node. Use query_cypher for structural questions.
+search_graph / get_node. search_graph understands meaning and works across languages, so
+describe what you need in plain words. Use query_cypher for structural questions.
 
 Write as you go, not only at the end: facts about the user, preferences and corrections,
 decisions with their reasons, components and concepts of the project, useful resources, open
 tasks. Search first and update an existing node rather than creating a near-duplicate. Keep
 `summary` to one line; details go in `body` or `append_body`. When something changes, update the
 node, or set status='superseded' on the old decision and link the new one with SUPERSEDES.
+If upsert_node reports similar existing nodes, prefer updating one of them, or merge_nodes.
 Never store secrets, tokens, passwords or personal data the user has not chosen to share.
 
 Scope: nodes are attached to the current project automatically, except global types
@@ -90,17 +93,18 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
         return self.renderer.overview(None if all_projects else self.current_project())
 
     def search_graph(self, query: str, type: str | None = None, limit: int = 10) -> str:
-        """Full-text search over ids, titles, summaries, bodies and tags. Results from the current
-        project rank higher.
+        """Hybrid search: matches by meaning (in any language) and by keywords over titles,
+        summaries, bodies and tags. Results from the current project rank higher.
 
         Args:
-            query: Words to search for.
+            query: What you are looking for, in plain words or keywords.
             type: Only return nodes of this type.
             limit: Maximum number of results.
         """
         hits = self.store.search(query, type=type, project=self.current_project(), limit=limit)
         if not hits:
             return f"No nodes match {query!r}."
+        self.store.touch([node.id for _, node in hits])
         return "\n".join(self.renderer.brief(node) for _, node in hits)
 
     def get_node(self, id: str, depth: int = 1) -> str:
@@ -110,6 +114,7 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
             id: Node id.
             depth: 2 also lists second-degree neighbors.
         """
+        self.store.touch([id])
         return self.renderer.node(id, depth=min(max(depth, 1), 2))
 
     def context_for_directory(self, path: str) -> str:
@@ -163,7 +168,14 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
             path=path, status=status, project=project if project != id else None,
         )
         where = f" in project {', '.join(node.projects)}" if node.projects else " (global)"
-        return f"{'Created' if created else 'Updated'} `{node.id}` ({node.type}){where}."
+        reply = f"{'Created' if created else 'Updated'} `{node.id}` ({node.type}){where}."
+        if created:
+            similar = self.store.similar(self.store.text_of(node), type=node.type, exclude=node.id)
+            if similar:
+                listed = ", ".join(f"`{brief['id']}` ({score:.2f})" for score, brief in similar)
+                reply += (f" Similar existing {node.type} nodes: {listed}. If one is the same thing, "
+                          f"merge them with merge_nodes(keep, remove).")
+        return reply
 
     def link(self, source: str, relation: str, target: str, note: str | None = None) -> str:
         """Add a directed relation source -[RELATION]-> target between two existing nodes.
@@ -208,6 +220,25 @@ Suggested relations: {", ".join(Schema.SUGGESTED_RELATIONS)}.
             id: Node id.
         """
         return f"Deleted `{id}` and {self.store.delete(id)} incoming relation(s)."
+
+    def merge_nodes(self, keep: str, remove: str) -> str:
+        """Merge a duplicate into another node: relations, project links, tags and text move to
+        `keep`, then `remove` is deleted.
+
+        Args:
+            keep: Id of the node that survives.
+            remove: Id of the duplicate to fold into it.
+        """
+        return self.maintenance.merge(keep, remove)
+
+    def review_graph(self, stale_days: int = 30) -> str:
+        """Check the graph's health: likely duplicates, orphan nodes, stale open tasks, and
+        superseded nodes that active nodes still depend on. Use it occasionally to tidy up.
+
+        Args:
+            stale_days: Age in days after which an open task counts as stale.
+        """
+        return self.maintenance.review(stale_days).to_markdown()
 
     def log_session(self, summary: str, details: str | None = None, related: list[str] | None = None) -> str:
         """Record what happened in this working session: a session node in the current project,

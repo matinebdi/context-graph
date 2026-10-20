@@ -17,7 +17,8 @@
         "CONTEXT_GRAPH_NEO4J_URI": "${user_config.neo4j_uri}",
         "CONTEXT_GRAPH_NEO4J_USER": "${user_config.neo4j_user}",
         "CONTEXT_GRAPH_NEO4J_PASSWORD": "${user_config.neo4j_password}",
-        "CONTEXT_GRAPH_NEO4J_DATABASE": "${user_config.neo4j_database}"
+        "CONTEXT_GRAPH_NEO4J_DATABASE": "${user_config.neo4j_database}",
+        "CONTEXT_GRAPH_CLIENT": "claude-code"
       }
     }
   }

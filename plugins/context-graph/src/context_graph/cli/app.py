@@ -4,12 +4,12 @@ import sys
 from pathlib import Path
 
 from context_graph.cli.database import LocalDatabase
-from context_graph.cli.hooks import SessionStartHook
+from context_graph.cli.hooks import SessionStartHook, StopHook
 from context_graph.config import Environment
 from context_graph.domain import GraphError, Node
 from context_graph.integrations import INTEGRATIONS
 from context_graph.rendering import MarkdownRenderer
-from context_graph.storage import Neo4jStore
+from context_graph.storage import GraphMaintenance, Neo4jStore
 
 
 class ContextGraphCLI:
@@ -107,8 +107,23 @@ class ContextGraphCLI:
         return 0
 
     def cmd_hook(self, args) -> int:
-        print(SessionStartHook(self.store, args.format).respond(sys.stdin.read()))
+        if args.event == "stop":
+            output = StopHook(args.format).respond(sys.stdin.read())
+        else:
+            output = SessionStartHook(self.store, args.format).respond(sys.stdin.read())
+        if output:
+            print(output)
         return 0  # a hook must never block the session
+
+    def cmd_review(self, args) -> int:
+        print(GraphMaintenance(self.store).review(args.stale_days).to_markdown())
+        return 0
+
+    def cmd_reindex(self, args) -> int:
+        print("Embedding nodes (the model downloads once on first use)…", flush=True)
+        count = GraphMaintenance(self.store).reindex(force=args.all)
+        print(f"Embedded {count} node(s).")
+        return 0
 
     def cmd_init_schema(self, args) -> int:
         self.store.init_schema()
@@ -162,10 +177,14 @@ class ContextGraphCLI:
             command = sub.add_parser(name, help=text)
             command.add_argument("client", choices=sorted(INTEGRATIONS))
             command.add_argument("--dir", default=".", help="project directory (default: current)")
-        hook = sub.add_parser("hook", help="session-start hook entry point (reads hook JSON on stdin)")
-        hook.add_argument("event", choices=["session-start"])
+        hook = sub.add_parser("hook", help="client hook entry point (reads the hook JSON on stdin)")
+        hook.add_argument("event", choices=["session-start", "stop"])
         hook.add_argument("--format", choices=SessionStartHook.CLIENTS, default="claude")
         sub.add_parser("init-schema", help="create constraints and indexes (idempotent)")
+        review = sub.add_parser("review", help="find duplicates, orphans, stale tasks, outdated dependencies")
+        review.add_argument("--stale-days", type=int, default=30)
+        reindex = sub.add_parser("reindex", help="compute embeddings for semantic search")
+        reindex.add_argument("--all", action="store_true", help="recompute every node, not only missing ones")
         overview = sub.add_parser("overview", help="the overview injected at session start")
         overview.add_argument("--all", action="store_true", help="ignore the current project scope")
         show = sub.add_parser("show", help="one node with its relations")

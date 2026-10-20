@@ -77,7 +77,7 @@ class TestBackup:
         store.upsert("p", type="project", title="P", path="/tmp/p")
         store.upsert("t", type="task", title="T", relations=[Relation("part_of", "p")], project="p")
         dump = store.export_all()
-        store._run("MATCH (n) DETACH DELETE n")
+        store.run("MATCH (n) DETACH DELETE n")
         assert store.import_nodes([Node.from_dict(d) for d in dump]) == 2
         assert store.export_all() == dump
 

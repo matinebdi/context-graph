@@ -38,7 +38,12 @@ Tests are grouped in classes per component.
 |---|---|
 | `tests/unit/test_domain.py` | id, type and relation validation, including injection attempts; path normalization; Lucene query building; legacy parser; settings with unresolved placeholders |
 | `tests/unit/test_integrations.py` | Cursor installer: merging, idempotency, uninstall, refusing broken JSON and `uvx`; hook command quoting; hook directory precedence; Claude skill in sync with `agent-instructions.md` |
+| `tests/unit/test_ranking_and_hooks.py` | rank fusion and penalties; importance scoring (including legacy timestamps); transcript parsing; stop-hook threshold, once-per-stretch behavior and loop guards for both clients |
 | `tests/integration/test_neo4j_store.py` | upsert and relabeling, transactional rollback, link de-duplication, delete cascade, project scoping, search ranking, read-only Cypher, export/import round trip, rendering, server tool methods |
+| `tests/integration/test_semantic_and_maintenance.py` | semantic matches keywords miss, embeddings following text changes, reindex, provenance, importance ordering, duplicate warnings, merge, review findings, overview budget |
+
+The integration tests use `TrigramEmbedder` (in `conftest.py`) instead of the real model. It is a
+deterministic hashed-trigram embedder, so no download is needed and the tests stay fast.
 
 How the integration tests get their database:
 - They run against a **throwaway** container, `context-graph-test-neo4j` on `127.0.0.1:17687`.
@@ -64,10 +69,11 @@ How the integration tests get their database:
     ├── src/context_graph/
     │   ├── domain/                   # Node, Relation, Schema, Clock, PathKey, GraphError
     │   ├── config/                   # Environment, LocalCredentials, Settings
-    │   ├── storage/                  # Neo4jStore, Neo4jErrorTranslator
+    │   ├── semantic/                 # Embedder
+    │   ├── storage/                  # Neo4jStore, GraphMaintenance, Ranking, Neo4jErrorTranslator
     │   ├── rendering/                # MarkdownRenderer
     │   ├── server/                   # ContextGraphServer
-    │   ├── cli/                      # ContextGraphCLI, SessionStartHook, LocalDatabase
+    │   ├── cli/                      # ContextGraphCLI, SessionStartHook, StopHook, LocalDatabase
     │   ├── integrations/             # ClientIntegration, CursorIntegration, ClaudeCodeIntegration
     │   └── assets/                   # agent-instructions.md, compose.yml
     └── tests/

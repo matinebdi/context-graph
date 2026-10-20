@@ -16,8 +16,10 @@
 | Claude Code **or** Cursor | Claude Code 2.x with plugins; Cursor with MCP and hooks | the client |
 | [uv](https://docs.astral.sh/uv/) | ≥ 0.4 | creates the Python environment and runs the server and CLI. Downloads Python ≥ 3.11 if none is present |
 | Docker Desktop / Docker Engine | Compose v2 (`docker compose`) | runs the bundled Neo4j. **Optional**: see [External Neo4j](#external-neo4j-no-docker) |
-| Network | outbound HTTPS on first run | Python packages and the `neo4j:5.26-community` image (~600 MB) |
-| RAM | ~1.5 GB free | Neo4j heap max 1 GB plus 512 MB page cache, tunable in `assets/compose.yml` |
+| Network | outbound HTTPS on first run | Python packages, the `neo4j:5.26-community` image (~600 MB) and the embedding model (~220 MB) |
+| Disk | ~1.5 GB | image, Python environment, model, data |
+| RAM | ~2 GB free | Neo4j heap max 1 GB plus 512 MB page cache (tunable in `assets/compose.yml`); the embedding model uses ~300 MB while the MCP server runs |
+| Python | 3.11 – 3.13 | uv downloads a suitable one if needed (the embedding runtime has no 3.14 build yet) |
 
 Platforms: developed and verified on **Windows 11**, where Git Bash runs the hooks. macOS and
 Linux are expected to work, since everything is POSIX shell plus Python, but they haven't been
@@ -118,7 +120,9 @@ It does the following:
    where supported), unless the file already exists.
 2. Starts the bundled container with `docker compose -f <package>/assets/compose.yml up -d`.
 3. Waits up to 180 seconds for Neo4j to accept connections.
-4. Creates the constraints and indexes. This step is idempotent.
+4. Creates the constraints and indexes, including the vector index. This step is idempotent.
+5. Downloads the multilingual embedding model into `~/.context-graph/models` (~220 MB, once),
+   and embeds the nodes that don't have a vector yet.
 
 The container restarts with Docker, and the data lives in a Docker volume. For details, see
 [Operations → Local database](operations.md#local-database).
