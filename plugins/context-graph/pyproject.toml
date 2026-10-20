@@ -1,6 +1,6 @@
 [project]
 name = "context-graph"
-version = "0.2.0"
+version = "0.3.0"
 description = "Claude Code plugin: long-term memory for Claude as a Neo4j knowledge graph (MCP server + CLI)."
 license = "MIT"
 requires-python = ">=3.11"
@@ -11,8 +11,8 @@ dependencies = [
 ]
 
 [project.scripts]
-context-graph = "context_graph.cli:main"
-context-graph-mcp = "context_graph.server:main"
+context-graph = "context_graph.cli.app:ContextGraphCLI.main"
+context-graph-mcp = "context_graph.server.app:ContextGraphServer.main"
 
 [dependency-groups]
 dev = ["pytest>=8"]

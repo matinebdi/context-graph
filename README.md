@@ -82,14 +82,20 @@ flowchart LR
 
 | Layer | Module | Responsibility |
 |---|---|---|
-| Model | `model.py` | dataclasses `Node` and `Relation`; validation of ids, types, relations and statuses; conversion to Cypher-safe identifiers; path normalization; legacy markdown parser |
-| Config | `config.py` | resolves connection settings from env and userConfig; generates and reads the local password file; resolves the project directory |
-| Store | `neo4j_store.py` | all Cypher: schema, CRUD, scoping, full-text search, read-only queries, export/import |
-| Render | `render.py` | markdown views (node page, overview, project context) shared by the server and the hook |
-| Server | `server.py` | MCP server (`mcp` SDK 2.x `MCPServer`, stdio) exposing 11 tools plus server instructions |
-| CLI | `cli.py` | `up` / `down` / `status` / `install` / `uninstall` / `hook` / `overview` / `show` / `search` / `export` / `import` / `import-markdown` / `init-schema` |
-| Installers | `install.py` | per-client config writers (Cursor): idempotent JSON merges, and uninstall |
-| Assets | `assets/` | `agent-instructions.md` (single source for the Claude skill and the Cursor rule) and `compose.yml` |
+| Package | Classes | Responsibility |
+|---|---|---|
+| `domain/` | `Node`, `Relation`, `Schema`, `Clock`, `PathKey`, `GraphError` | entities; validation of ids, types, statuses; conversion to Cypher-safe labels and relationship types; path normalization; legacy markdown parser. `GraphError` subclasses the MCP SDK's `ToolError`, so its message reaches clients as a tool error |
+| `config/` | `Environment`, `LocalCredentials`, `Settings` | reads env and userConfig (ignoring unresolved `${…}` placeholders); generates and reads the local password; resolves the project directory |
+| `storage/` | `Neo4jStore`, `Neo4jErrorTranslator` | all Cypher: schema, CRUD, scoping, full-text search, read-only queries, export/import. Transactions are store methods passed to `execute_write` |
+| `rendering/` | `MarkdownRenderer` | markdown views (node page, overview, project context) shared by the server and the hooks |
+| `server/` | `ContextGraphServer` | MCP server (`mcp` SDK 2.x `MCPServer`, stdio). Its 11 tool methods are registered with `add_tool`; their Google-style docstrings are the tool descriptions |
+| `cli/` | `ContextGraphCLI`, `SessionStartHook`, `LocalDatabase` | the `context-graph` command (`cmd_<name>` methods), the session-start hook for each client, Docker Compose management |
+| `integrations/` | `ClientIntegration` (abstract), `CursorIntegration`, `ClaudeCodeIntegration`, `JsonConfig`, `PythonRuntime` | per-client installers: idempotent JSON merges and uninstall |
+| `assets/` | — | `agent-instructions.md` (single source for the Claude skill and the Cursor rule) and `compose.yml` |
+
+Entry points: `python -m context_graph.server` and `python -m context_graph.cli` (each package has a
+`__main__.py`). The console scripts `context-graph-mcp` and `context-graph` point at
+`ContextGraphServer.main` and `ContextGraphCLI.main`.
 
 Design choices:
 - **Stateless processes.** The MCP server and the hook hold no state between calls apart from a
@@ -664,7 +670,7 @@ the database is stopped, or snapshot the `context-graph_neo4j-data` volume.
 |---|---|
 | Network exposure | ports bound to `127.0.0.1` only. Nothing listens on external interfaces |
 | Credentials | random per-machine password in `~/.context-graph/neo4j-password` (mode 0600 on POSIX). External DB passwords go in the OS credential store (`sensitive: true`). No credential is written to the repo or `settings.json` |
-| Cypher injection | values are always passed as parameters. Labels and relationship types, which can't be parameterized, are interpolated only after `to_label` / `to_rel` validation against `^[a-z][a-z0-9_]{0,39}$` / `^[A-Za-z][A-Za-z0-9_]{0,39}$`. Node ids are validated against `^[a-z0-9][a-z0-9-]{0,79}$` |
+| Cypher injection | values are always passed as parameters. Labels and relationship types, which can't be parameterized, are interpolated only after `Schema.label` / `Schema.relationship` validation against `^[a-z][a-z0-9_]{0,39}$` / `^[A-Za-z][A-Za-z0-9_]{0,39}$`. Node ids are validated against `^[a-z0-9][a-z0-9-]{0,79}$` |
 | Destructive queries from the model | `query_cypher` runs in a READ transaction, so the server rejects writes. Deletion is only possible node by node through `delete_node` |
 | Sensitive data in memory | the `context-graph` skill and the server instructions tell Claude never to store secrets, tokens, passwords, or personal data the user didn't choose to share |
 | Search query parsing | Lucene operators are stripped by tokenization before the full-text query runs |
@@ -709,19 +715,20 @@ claude plugin validate .          # manifest, hooks, MCP config
 claude plugin validate ../..      # marketplace
 ```
 
-The test suite has two parts:
-- **`tests/test_model.py`** holds pure unit tests:
-  - validation and identifier safety, including injection attempts against `to_rel`
+The test suite has two parts, `tests/unit/` and `tests/integration/`, with tests grouped in
+classes per component:
+- **`tests/unit/test_domain.py`** holds pure unit tests:
+  - validation and identifier safety, including injection attempts against `Schema.relationship`
   - path normalization
   - Lucene query building
   - the legacy parser
   - config resolution with unresolved placeholders
-- **`tests/test_install.py`** covers the Cursor installer: merging with existing configs,
+- **`tests/unit/test_integrations.py`** covers the Cursor installer: merging with existing configs,
   idempotency, uninstall, refusing to clobber invalid JSON or to run from `uvx`, hook command
   quoting, hook directory precedence, and that the Claude skill matches `agent-instructions.md`.
-- **`tests/test_neo4j_store.py`** holds integration tests against a **throwaway** container:
-  - The container is `context-graph-test-neo4j` on `127.0.0.1:17687`, created and removed by a
-    session fixture. They are skipped when Docker is unavailable, and never touch your real
+- **`tests/integration/test_neo4j_store.py`** holds integration tests against a **throwaway** container:
+  - The container is `context-graph-test-neo4j` on `127.0.0.1:17687`, managed by the
+    `ThrowawayNeo4j` class in `tests/integration/conftest.py`. They are skipped when Docker is unavailable, and never touch your real
     database.
   - They cover:
     - upsert, merge and label changes
@@ -733,6 +740,7 @@ The test suite has two parts:
     - read-only enforcement
     - export/import round-trip with timestamp preservation
     - rendering
+    - the server's tool methods: auto scoping, and errors raised as `GraphError`
 
 For iterating on the plugin live, add the clone as a directory marketplace (§3.1), edit, then run
 `/reload-plugins`. To test the MCP server without Claude Code, use any MCP stdio client. For
@@ -771,14 +779,19 @@ what's in `uv.lock`.
     │   └── remember/SKILL.md         # /context-graph:remember
     ├── pyproject.toml · uv.lock      # package "context-graph"; entry points context-graph, context-graph-mcp
     ├── src/context_graph/
-    │   ├── model.py  config.py  neo4j_store.py  render.py  server.py  cli.py  install.py
+    │   ├── domain/                   # Node, Relation, Schema, Clock, PathKey, GraphError
+    │   ├── config/                   # Environment, LocalCredentials, Settings
+    │   ├── storage/                  # Neo4jStore, Neo4jErrorTranslator
+    │   ├── rendering/                # MarkdownRenderer
+    │   ├── server/                   # ContextGraphServer (+ __main__)
+    │   ├── cli/                      # ContextGraphCLI, SessionStartHook, LocalDatabase (+ __main__)
+    │   ├── integrations/             # ClientIntegration, CursorIntegration, ClaudeCodeIntegration
     │   └── assets/
     │       ├── agent-instructions.md # usage policy: source of the Claude skill and the Cursor rule
     │       └── compose.yml           # local Neo4j
     └── tests/
-        ├── test_model.py
-        ├── test_install.py
-        └── test_neo4j_store.py
+        ├── unit/                     # test_domain.py, test_integrations.py
+        └── integration/              # conftest.py (ThrowawayNeo4j), test_neo4j_store.py
 ```
 
 ---

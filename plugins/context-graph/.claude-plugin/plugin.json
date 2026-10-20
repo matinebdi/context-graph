@@ -1,7 +1,7 @@
 {
   "name": "context-graph",
   "displayName": "Context Graph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Long-term memory for Claude as a Neo4j knowledge graph: Claude records what it learns about you, your projects and your decisions, and recalls it in every session where the plugin is enabled.",
   "author": {
     "name": "Matin Ebadi"
